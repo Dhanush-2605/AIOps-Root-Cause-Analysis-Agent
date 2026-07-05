@@ -89,7 +89,7 @@ spec:
           claimName: postgres-pvc
       - name: gcp-secret-volume
         csi:                         # <--- The CSI driver fetches from Secret Manager
-          driver: secrets-store.csi.k8s.io
+          driver: secrets-store-gke.csi.k8s.io
           readOnly: true
           volumeAttributes:
             secretProviderClass: "gcp-db-credentials"
@@ -141,7 +141,7 @@ spec:
       volumes:
       - name: gcp-secret-volume
         csi:
-          driver: secrets-store.csi.k8s.io
+          driver: secrets-store-gke.csi.k8s.io
           readOnly: true
           volumeAttributes:
             secretProviderClass: "gcp-db-credentials"
