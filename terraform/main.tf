@@ -23,6 +23,10 @@ resource "google_container_cluster" "primary" {
   name             = "gke-production-cluster"
   location         = var.region
   enable_autopilot = true
+  
+  secret_manager_config {
+    enabled = true
+  }
 
   depends_on = [google_project_service.container]
 }
