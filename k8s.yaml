@@ -1,3 +1,39 @@
+# ==========================================
+# CONFIGURATIONS, SECRETS & IDENTITIES (NEW)
+# ==========================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  # Centralized routing and non-sensitive data
+  DB_HOST: "postgres-service"
+  DB_USER: "postgres"
+  DB_NAME: "mytierdb"
+  POSTGRES_USER: "postgres"
+  POSTGRES_DB: "mytierdb"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backend-sa
+  annotations:
+    # The Workload Identity Bridge to Google Cloud
+    iam.gke.io/gcp-service-account: "backend-db-accessor@core-appliance-338915.iam.gserviceaccount.com"
+
+    
+---
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: gcp-db-credentials
+spec:
+  provider: gcp
+  parameters:
+    secrets: |
+      - resourceName: "projects/core-appliance-338915/secrets/db-password/versions/latest"
+        path: "db-password.txt"
+
 ---
 # ==========================================
 # TIER 3: DATABASE (PostgreSQL)
@@ -12,8 +48,6 @@ spec:
     requests:
       storage: 1Gi
 ---
-
-
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -28,34 +62,44 @@ spec:
       labels:
         app: postgres
     spec:
+      serviceAccountName: backend-sa # <--- Wears the ID badge to fetch the secret
       containers:
       - name: postgres
         image: postgres:15-alpine
+        envFrom:
+        - configMapRef:
+            name: app-config         # <--- Pulls standard users/DB names
         env:
-        - name: POSTGRES_USER
-          value: "postgres"
-        - name: POSTGRES_PASSWORD
-          value: "supersecretpassword"
-        - name: POSTGRES_DB
-          value: "mytierdb"
-        - name: PGDATA                          
+        # Notice we changed POSTGRES_PASSWORD to POSTGRES_PASSWORD_FILE
+        - name: POSTGRES_PASSWORD_FILE
+          value: "/mnt/secrets/db-password.txt"
+        - name: PGDATA                           
           value: "/var/lib/postgresql/data/pgdata" 
         ports:
         - containerPort: 5432
         volumeMounts:
         - mountPath: /var/lib/postgresql/data
           name: postgres-storage
+        - mountPath: /mnt/secrets    # <--- Mounts the GCP secret file
+          name: gcp-secret-volume
+          readOnly: true
       volumes:
       - name: postgres-storage
         persistentVolumeClaim:
           claimName: postgres-pvc
+      - name: gcp-secret-volume
+        csi:                         # <--- The CSI driver fetches from Secret Manager
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: "gcp-db-credentials"
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: postgres-service
 spec:
-  type: ClusterIP # Internal network only
+  type: ClusterIP 
   selector:
     app: postgres
   ports:
@@ -81,27 +125,33 @@ spec:
       labels:
         app: backend
     spec:
+      serviceAccountName: backend-sa # <--- Wears the exact same ID badge
       containers:
       - name: backend
-        image: BACKEND_IMAGE_PLACEHOLDER # GitHub Actions will inject this
+        image: BACKEND_IMAGE_PLACEHOLDER 
         ports:
         - containerPort: 8080
-        env:
-        - name: DB_HOST
-          value: "postgres-service" # Connects via internal DNS
-        - name: DB_USER
-          value: "postgres"
-        - name: DB_PASSWORD
-          value: "supersecretpassword"
-        - name: DB_NAME
-          value: "mytierdb"
+        envFrom:
+        - configMapRef:
+            name: app-config         # <--- Pulls the host routing data
+        volumeMounts:
+        - mountPath: /mnt/secrets    # <--- Mounts the exact same GCP secret file
+          name: gcp-secret-volume
+          readOnly: true
+      volumes:
+      - name: gcp-secret-volume
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: "gcp-db-credentials"
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: backend-service
 spec:
-  type: ClusterIP # Internal network only, frontend proxy will route here
+  type: ClusterIP 
   selector:
     app: backend
   ports:
@@ -129,7 +179,7 @@ spec:
     spec:
       containers:
       - name: frontend
-        image: FRONTEND_IMAGE_PLACEHOLDER # GitHub Actions will inject this
+        image: FRONTEND_IMAGE_PLACEHOLDER 
         ports:
         - containerPort: 80
 ---
@@ -138,11 +188,10 @@ kind: Service
 metadata:
   name: frontend-service
 spec:
-  type: LoadBalancer # Exposes to the public internet
+  type: LoadBalancer 
   selector:
     app: frontend
   ports:
     - protocol: TCP
       port: 80
       targetPort: 80
-      

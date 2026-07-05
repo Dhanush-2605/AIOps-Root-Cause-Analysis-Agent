@@ -7,13 +7,13 @@ on:
 
 env:
   PROJECT_ID: core-appliance-338915
-  REGION: us-central1
+  REGION: asia-south1
   REPO_NAME: nodejs-repo
   IMAGE_NAME: nodejs-app
-  CLUSTER_NAME: nodejs-cluster
+  CLUSTER_NAME: gke-production-cluster
   # Replace the line below with your exact provider string
-  WORKLOAD_IDENTITY_PROVIDER: 'projects/815415208014/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
-  SERVICE_ACCOUNT: 'github-actions-sa@core-appliance-338915.iam.gserviceaccount.com'
+  WORKLOAD_IDENTITY_PROVIDER: 'projects/815415208014/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+  SERVICE_ACCOUNT: 'github-actions-pipeline@core-appliance-338915.iam.gserviceaccount.com'
 
 jobs:
   build-and-deploy:
