@@ -8,7 +8,7 @@ on:
 env:
   PROJECT_ID: core-appliance-338915
   REGION: asia-south1
-  REPO_NAME: nodejs-repo
+  REPO_NAME: nodejs-app-repo
   IMAGE_NAME: nodejs-app
   CLUSTER_NAME: gke-production-cluster
   # Replace the line below with your exact provider string
