@@ -1,4 +1,36 @@
 # ==========================================
+# 1. DATABASE INIT SCRIPT (1 Million Rows)
+# ==========================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-script
+data:
+  init.sql: |
+    -- Create the table
+    CREATE TABLE IF NOT EXISTS employee_data (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100),
+        department VARCHAR(50),
+        salary INT,
+        join_date DATE
+    );
+
+    -- Generate 1,000,000 rows of dummy data using PostgreSQL's built-in generator
+    INSERT INTO employee_data (name, department, salary, join_date)
+    SELECT 
+        'Employee_' || i,
+        (ARRAY['Engineering', 'HR', 'Sales', 'Marketing'])[floor(random() * 4 + 1)],
+        floor(random() * 100000 + 50000)::INT,
+        CURRENT_DATE - (random() * 3650)::INT
+    FROM generate_series(1, 1000000) AS i;
+
+    -- Create a custom B-tree index to test query latency
+    CREATE INDEX idx_department_salary ON employee_data USING btree (department, salary);
+
+---
+
+# ==========================================
 # CONFIGURATIONS, SECRETS & IDENTITIES (NEW)
 # ==========================================
 apiVersion: v1

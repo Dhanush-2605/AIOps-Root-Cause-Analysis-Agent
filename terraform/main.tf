@@ -23,7 +23,8 @@ resource "google_container_cluster" "primary" {
   name             = "gke-production-cluster"
   location         = var.region
   enable_autopilot = true
-  
+
+  deletion_protection = false
   secret_manager_config {
     enabled = true
   }
