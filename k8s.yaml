@@ -44,6 +44,23 @@ data:
   DB_NAME: "mytierdb"
   POSTGRES_USER: "postgres"
   POSTGRES_DB: "mytierdb"
+
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  # Node.js now talks to the Proxy, NOT the database directly!
+  DB_HOST: "pgpool-service" 
+  
+  # We also tell Node.js where the Redis queue is
+  REDIS_HOST: "redis-service" 
+  
+  DB_USER: "postgres"
+  DB_NAME: "mytierdb"
+  POSTGRES_USER: "postgres"
+  POSTGRES_DB: "mytierdb"
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -80,12 +97,27 @@ spec:
     requests:
       storage: 1Gi
 ---
-apiVersion: apps/v1
-kind: Deployment
+# ==========================================================================
+# PART 4: THE DATABASE CLUSTER (POSTGRESQL STATEFULSET)
+# ==========================================================================
+apiVersion: v1
+kind: Service
 metadata:
-  name: postgres-deployment
+  name: postgres-headless
 spec:
-  replicas: 1
+  clusterIP: None # Disables standard load balancing for direct Pod IP addressing
+  ports:
+  - port: 5432
+  selector:
+    app: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: "postgres-headless"
+  replicas: 2 # Generates postgres-0 (Master) and postgres-1 (Replica)
   selector:
     matchLabels:
       app: postgres
@@ -94,51 +126,55 @@ spec:
       labels:
         app: postgres
     spec:
-      serviceAccountName: backend-sa # <--- Wears the ID badge to fetch the secret
+      serviceAccountName: backend-sa
       containers:
       - name: postgres
-        image: postgres:15-alpine
-        envFrom:
-        - configMapRef:
-            name: app-config         # <--- Pulls standard users/DB names
-        env:
-        # Notice we changed POSTGRES_PASSWORD to POSTGRES_PASSWORD_FILE
-        - name: POSTGRES_PASSWORD_FILE
-          value: "/mnt/secrets/db-password.txt"
-        - name: PGDATA                           
-          value: "/var/lib/postgresql/data/pgdata" 
+        image: docker.io/bitnami/postgresql:15
         ports:
         - containerPort: 5432
+        
+        # Dynamic Bootstrap Interceptor Script
+        command:
+          - /bin/bash
+          - -c
+          - |
+            if [[ "$HOSTNAME" == "postgres-0" ]]; then
+              echo "Booting as MASTER: $HOSTNAME"
+              export POSTGRESQL_REPLICATION_MODE="master"
+            else
+              echo "Booting as REPLICA: $HOSTNAME"
+              export POSTGRESQL_REPLICATION_MODE="slave"
+              export POSTGRESQL_MASTER_HOST="postgres-0.postgres-headless"
+              export POSTGRESQL_MASTER_PORT_NUMBER="5432"
+            fi
+            
+            # Exec pass-through back to the base entrypoint
+            exec /opt/bitnami/scripts/postgresql/entrypoint.sh /opt/bitnami/scripts/postgresql/run.sh
+        
+        env:
+        - name: POSTGRESQL_REPLICATION_USER
+          value: "repl_user"
+        - name: POSTGRESQL_REPLICATION_PASSWORD
+          value: "repl_password123"
+        - name: POSTGRESQL_DATABASE
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: DB_NAME
+        - name: POSTGRESQL_PASSWORD_FILE
+          value: "/mnt/secrets/db-password.txt"
+          
         volumeMounts:
-        - mountPath: /var/lib/postgresql/data
-          name: postgres-storage
-        - mountPath: /mnt/secrets    # <--- Mounts the GCP secret file
+        - mountPath: /mnt/secrets    
           name: gcp-secret-volume
           readOnly: true
       volumes:
-      - name: postgres-storage
-        persistentVolumeClaim:
-          claimName: postgres-pvc
       - name: gcp-secret-volume
-        csi:                         # <--- The CSI driver fetches from Secret Manager
+        csi:                         
           driver: secrets-store-gke.csi.k8s.io
           readOnly: true
           volumeAttributes:
             secretProviderClass: "gcp-db-credentials"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgres-service
-spec:
-  type: ClusterIP 
-  selector:
-    app: postgres
-  ports:
-    - protocol: TCP
-      port: 5432
-      targetPort: 5432
-
 ---
 # ==========================================
 # TIER 2: BACKEND (Node.js API)
@@ -260,4 +296,5 @@ spec:
   ports:
   - port: 6379
   selector:
-    app: redis
+    app: redis  
+
