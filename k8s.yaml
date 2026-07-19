@@ -198,6 +198,23 @@ spec:
             configMapKeyRef:
               name: app-config
               key: POSTGRES_USER
+        
+        - name: PGPOOL_SR_CHECK_USER
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: POSTGRES_USER
+        - name: PGPOOL_SR_CHECK_PASSWORD_FILE
+          value: "/mnt/secrets/db-password.txt"
+
+        - name: PGPOOL_HEALTH_CHECK_USER
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: POSTGRES_USER
+        - name: PGPOOL_HEALTH_CHECK_PASSWORD_FILE
+          value: "/mnt/secrets/db-password.txt"
+
         - name: PGPOOL_POSTGRES_PASSWORD_FILE
           value: "/mnt/secrets/db-password.txt"
         - name: PGPOOL_ADMIN_USERNAME
