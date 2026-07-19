@@ -109,7 +109,7 @@ spec:
       serviceAccountName: backend-sa
       containers:
       - name: postgres
-        image: docker.io/bitnami/postgresql:15
+        image: docker.io/bitnamilegacy/postgresql:15.8.0-debian-12-r3
         ports:
         - containerPort: 5432
         
@@ -181,7 +181,7 @@ spec:
       serviceAccountName: backend-sa
       containers:
       - name: pgpool
-        image: docker.io/bitnami/pgpool:4
+        image: docker.io/bitnamilegacy/pgpool:4.6.3-debian-12-r0
         ports:
         - containerPort: 5432
         env:
