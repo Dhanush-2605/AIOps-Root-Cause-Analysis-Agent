@@ -1,45 +1,49 @@
 import React, { useState, useEffect } from 'react';
 
-function App() {
-  const [items, setItems] = useState([]);
-  const [newItem, setNewItem] = useState('');
-  const [isLoading, setIsLoading] = useState(true);
-  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Fetch data from backend API
+function App() {
+  const [queueDepth, setQueueDepth] = useState(0);
+  const [spikeCount, setSpikeCount] = useState(5000);
+  const [isSpiking, setIsSpiking] = useState(false);
+
+  // Poll the backend metrics every 1 second to watch the queue drain
   useEffect(() => {
-    fetch('/api/data')
-      .then((res) => res.json())
-      .then((data) => {
-        setItems(data);
-        setIsLoading(false);
-      })
-      .catch((err) => {
-        console.error('Error fetching data:', err);
-        setIsLoading(false);
-      });
+    const fetchMetrics = () => {
+      fetch('/api/metrics')
+        .then((res) => res.json())
+        .then((data) => {
+          setQueueDepth(data.queueDepth || 0);
+        })
+        .catch((err) => console.error('Error fetching metrics:', err));
+    };
+
+    // Fetch immediately, then loop
+    fetchMetrics();
+    const interval = setInterval(fetchMetrics, 1000);
+    
+    return () => clearInterval(interval); // Cleanup on unmount
   }, []);
 
-  // Submit new item to backend
-  const handleSubmit = (e) => {
+  // Trigger the massive traffic spike
+  const handleSpike = (e) => {
     e.preventDefault();
-    if (!newItem.trim()) return;
+    if (spikeCount <= 0) return;
 
-    setIsSubmitting(true);
-    fetch('/api/data', {
+    setIsSpiking(true);
+    
+    fetch('/api/load-test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newItem.trim() }),
+      body: JSON.stringify({ count: Number(spikeCount) }),
     })
       .then((res) => res.json())
       .then((data) => {
-        setItems([...items, data]);
-        setNewItem('');
-        setIsSubmitting(false);
+        console.log("Spike triggered:", data);
+        setIsSpiking(false);
       })
       .catch((err) => {
-        console.error('Error adding item:', err);
-        setIsSubmitting(false);
+        console.error('Error triggering spike:', err);
+        setIsSpiking(false);
       });
   };
 
@@ -48,61 +52,66 @@ function App() {
       <div style={styles.card}>
         {/* Header Segment */}
         <div style={styles.header}>
-          <div style={styles.badge}>GKE Autopilot</div>
-          <h1 style={styles.title}>3-Tier Architecture Cloud Lab</h1>
+          <div style={styles.badge}>AIOps Architecture Lab</div>
+          <h1 style={styles.title}>Traffic Ingestion & Backpressure</h1>
           <p style={styles.subtitle}>
-            React Frontend decoupled from Node.js Backend, orchestrating state down to a persistent PostgreSQL instance.
+            Simulate massive traffic spikes. Requests are buffered in a Redis shock absorber and slowly drained into the PostgreSQL replica cluster.
           </p>
         </div>
 
         <hr style={styles.divider} />
 
-        {/* Form Segment */}
-        <form onSubmit={handleSubmit} style={styles.form}>
+        {/* Load Test Form */}
+        <form onSubmit={handleSpike} style={styles.form}>
           <div style={styles.inputWrapper}>
+            <label style={styles.label}>Simulated Requests</label>
             <input
-              type="text"
-              value={newItem}
-              onChange={(e) => setNewItem(e.target.value)}
-              placeholder="Enter a payload name (e.g., Cache-01)..."
+              type="number"
+              value={spikeCount}
+              onChange={(e) => setSpikeCount(e.target.value)}
+              min="100"
+              max="50000"
               style={styles.input}
-              disabled={isSubmitting}
+              disabled={isSpiking}
             />
           </div>
           <button 
             type="submit" 
             style={{
               ...styles.button,
-              opacity: isSubmitting || !newItem.trim() ? 0.7 : 1,
-              cursor: isSubmitting || !newItem.trim() ? 'not-allowed' : 'pointer'
+              opacity: isSpiking ? 0.7 : 1,
+              cursor: isSpiking ? 'not-allowed' : 'pointer',
+              backgroundColor: isSpiking ? '#94a3b8' : '#ef4444' // Red for danger/spike
             }}
-            disabled={isSubmitting || !newItem.trim()}
+            disabled={isSpiking}
           >
-            {isSubmitting ? 'Writing...' : 'Commit to DB'}
+            {isSpiking ? 'Firing...' : '🔥 FIRE TRAFFIC SPIKE'}
           </button>
         </form>
 
-        {/* Data List Segment */}
-        <div style={styles.listSection}>
-          <h3 style={styles.sectionTitle}>Database Ledger ({items.length} records)</h3>
+        {/* Live Metrics Segment */}
+        <div style={styles.metricsSection}>
+          <h3 style={styles.sectionTitle}>Live Redis Queue Depth</h3>
           
-          {isLoading ? (
-            <div style={styles.loadingState}>Polling cluster internal network...</div>
-          ) : items.length === 0 ? (
-            <div style={styles.emptyState}>
-              No records found. The <code>sample_items</code> table is currently blank. Commit a payload above to verify the data lifecycle.
+          <div style={styles.metricCard}>
+            <div style={styles.metricValue}>
+              {queueDepth.toLocaleString()}
             </div>
-          ) : (
-            <ul style={styles.list}>
-              {items.map((item, index) => (
-                <li key={item.id || index} style={styles.listItem}>
-                  <span style={styles.itemId}>#{item.id || index + 1}</span>
-                  <span style={styles.itemName}>{item.name}</span>
-                  <span style={styles.timestamp}>✓ Persistent</span>
-                </li>
-              ))}
-            </ul>
-          )}
+            <div style={styles.metricLabel}>
+              {queueDepth === 0 
+                ? 'Queue empty. System idle.' 
+                : 'Messages pending DB ingestion...'}
+            </div>
+            
+            {/* Visual Progress Bar */}
+            <div style={styles.progressBarBg}>
+               <div style={{
+                 ...styles.progressBarFill,
+                 width: `${Math.min((queueDepth / 10000) * 100, 100)}%`,
+                 backgroundColor: queueDepth > 2000 ? '#ef4444' : '#3b82f6'
+               }}></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -134,8 +143,8 @@ const styles = {
   },
   badge: {
     display: 'inline-block',
-    backgroundColor: '#e0f2fe',
-    color: '#0369a1',
+    backgroundColor: '#fef2f2',
+    color: '#991b1b',
     fontSize: '12px',
     fontWeight: '600',
     padding: '4px 10px',
@@ -164,35 +173,45 @@ const styles = {
   },
   form: {
     display: 'flex',
+    alignItems: 'flex-end',
     gap: '12px',
     marginBottom: '32px',
   },
   inputWrapper: {
     flex: '1',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+  },
+  label: {
+    fontSize: '12px',
+    fontWeight: '600',
+    color: '#475569',
+    textTransform: 'uppercase',
   },
   input: {
     width: '100%',
     padding: '12px 16px',
-    fontSize: '14px',
+    fontSize: '16px',
+    fontWeight: '600',
     borderRadius: '8px',
     border: '1px solid #cbd5e1',
-    backgroundColor: '#ffffff',
-    color: '#334155',
+    backgroundColor: '#f8fafc',
+    color: '#0f172a',
     outline: 'none',
     boxSizing: 'border-box',
-    transition: 'border-color 0.2s',
   },
   button: {
-    padding: '12px 20px',
+    padding: '14px 20px',
     fontSize: '14px',
-    fontWeight: '600',
+    fontWeight: '700',
     color: '#ffffff',
-    backgroundColor: '#0f172a',
     border: 'none',
     borderRadius: '8px',
     transition: 'background-color 0.2s',
+    height: '46px',
   },
-  listSection: {
+  metricsSection: {
     marginTop: '16px',
   },
   sectionTitle: {
@@ -203,56 +222,36 @@ const styles = {
     letterSpacing: '0.05em',
     margin: '0 0 12px 0',
   },
-  loadingState: {
-    textAlign: 'center',
-    padding: '24px',
-    color: '#64748b',
-    fontSize: '14px',
-    fontStyle: 'italic',
-  },
-  emptyState: {
+  metricCard: {
     backgroundColor: '#f8fafc',
-    border: '1px dashed #cbd5e1',
-    borderRadius: '8px',
-    padding: '24px',
+    border: '1px solid #e2e8f0',
+    borderRadius: '12px',
+    padding: '32px 24px',
     textAlign: 'center',
-    color: '#64748b',
-    fontSize: '14px',
-    lineHeight: '1.5',
   },
-  list: {
-    listStyle: 'none',
-    padding: '0',
-    margin: '0',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '8px',
-  },
-  listItem: {
-    display: 'flex',
-    alignItems: 'center',
-    backgroundColor: '#f8fafc',
-    border: '1px solid #f1f5f9',
-    borderRadius: '8px',
-    padding: '12px 16px',
-    fontSize: '14px',
-  },
-  itemId: {
-    fontWeight: '600',
-    color: '#94a3b8',
-    marginRight: '12px',
+  metricValue: {
+    fontSize: '48px',
+    fontWeight: '800',
+    color: '#0f172a',
     fontFamily: 'monospace',
+    lineHeight: '1',
+    marginBottom: '8px',
   },
-  itemName: {
-    color: '#334155',
-    fontWeight: '500',
-    flex: '1',
+  metricLabel: {
+    fontSize: '14px',
+    color: '#64748b',
+    marginBottom: '24px',
   },
-  timestamp: {
-    fontSize: '12px',
-    color: '#10b981',
-    fontWeight: '500',
+  progressBarBg: {
+    height: '8px',
+    backgroundColor: '#e2e8f0',
+    borderRadius: '9999px',
+    overflow: 'hidden',
   },
+  progressBarFill: {
+    height: '100%',
+    transition: 'width 0.5s ease-out, background-color 0.3s',
+  }
 };
 
 export default App;

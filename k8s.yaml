@@ -7,7 +7,7 @@ metadata:
   name: postgres-init-script
 data:
   init.sql: |
-    -- Create the table
+    -- Create the table structure so the backend can write immediately
     CREATE TABLE IF NOT EXISTS employee_data (
         id SERIAL PRIMARY KEY,
         name VARCHAR(100),
@@ -16,34 +16,14 @@ data:
         join_date DATE
     );
 
-    -- Generate 1,000,000 rows of dummy data using PostgreSQL's built-in generator
-    INSERT INTO employee_data (name, department, salary, join_date)
-    SELECT 
-        'Employee_' || i,
-        (ARRAY['Engineering', 'HR', 'Sales', 'Marketing'])[floor(random() * 4 + 1)],
-        floor(random() * 100000 + 50000)::INT,
-        CURRENT_DATE - (random() * 3650)::INT
-    FROM generate_series(1, 1000000) AS i;
-
-    -- Create a custom B-tree index to test query latency
-    CREATE INDEX idx_department_salary ON employee_data USING btree (department, salary);
-
+    -- Keep the B-tree index so your SELECT queries are optimized from day one
+    CREATE INDEX IF NOT EXISTS idx_department_salary ON employee_data USING btree (department, salary);
 ---
 
 # ==========================================
 # CONFIGURATIONS, SECRETS & IDENTITIES (NEW)
 # ==========================================
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: app-config
-data:
-  # Centralized routing and non-sensitive data
-  DB_HOST: "postgres-service"
-  DB_USER: "postgres"
-  DB_NAME: "mytierdb"
-  POSTGRES_USER: "postgres"
-  POSTGRES_DB: "mytierdb"
+
 
 
 apiVersion: v1
@@ -175,7 +155,81 @@ spec:
           readOnly: true
           volumeAttributes:
             secretProviderClass: "gcp-db-credentials"
+      - name: postgres-init-volume
+        configMap:
+          name: postgres-init-script
 ---
+
+
+# ==========================================================================
+# PART 3: THE TRAFFIC COP (PGPOOL-II PROXY)
+# ==========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgpool
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pgpool
+  template:
+    metadata:
+      labels:
+        app: pgpool
+    spec:
+      serviceAccountName: backend-sa
+      containers:
+      - name: pgpool
+        image: docker.io/bitnami/pgpool:4
+        ports:
+        - containerPort: 5432
+        env:
+        # Backend mapping using the Headless service DNS structures
+        - name: PGPOOL_BACKEND_NODES
+          value: "0:postgres-0.postgres-headless:5432,1:postgres-1.postgres-headless:5432"
+        
+        # Enable SQL parsing and Read/Write splitting
+        - name: PGPOOL_ENABLE_LOAD_BALANCING
+          value: "yes"
+        
+        - name: PGPOOL_POSTGRES_USERNAME
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: POSTGRES_USER
+        - name: PGPOOL_POSTGRES_PASSWORD_FILE
+          value: "/mnt/secrets/db-password.txt"
+        - name: PGPOOL_ADMIN_USERNAME
+          value: "admin"
+        - name: PGPOOL_ADMIN_PASSWORD
+          value: "admin123"
+        volumeMounts:
+        - mountPath: /mnt/secrets    
+          name: gcp-secret-volume
+          readOnly: true
+      volumes:
+      - name: gcp-secret-volume
+        csi:                         
+          driver: secrets-store-gke.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: "gcp-db-credentials"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgpool-service
+spec:
+  ports:
+  - port: 5432
+    name: postgres
+  selector:
+    app: pgpool
+---
+
+
+
 # ==========================================
 # TIER 2: BACKEND (Node.js API)
 # ==========================================

@@ -12,7 +12,7 @@ env:
   IMAGE_NAME: nodejs-app
   CLUSTER_NAME: gke-production-cluster
   # Replace the line below with your exact provider string
-  WORKLOAD_IDENTITY_PROVIDER: 'projects/815415208014/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+  WORKLOAD_IDENTITY_PROVIDER: 'projects/815415208014/locations/global/workloadIdentityPools/github-actions-pool-v1/providers/github-provider'
   SERVICE_ACCOUNT: 'github-actions-pipeline@core-appliance-338915.iam.gserviceaccount.com'
 
 jobs:
