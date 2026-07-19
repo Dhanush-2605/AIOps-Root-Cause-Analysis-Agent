@@ -299,6 +299,7 @@ spec:
       targetPort: 8080
 
 ---
+
 # ==========================================
 # TIER 1: FRONTEND (React UI)
 # ==========================================
@@ -335,6 +336,7 @@ spec:
       port: 80
       targetPort: 80
 
+---
 
 # ==========================================
 # 4. THE SHOCK ABSORBER: Redis Message Queue
