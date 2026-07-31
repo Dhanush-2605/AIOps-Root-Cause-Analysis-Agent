@@ -375,6 +375,25 @@ spec:
 
 
 
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: prometheus-main
+  namespace: monitoring
+spec:
+  # This section tells Prometheus exactly how to reach Alertmanager
+  alerting:
+    alertmanagers:
+    - namespace: monitoring
+      name: alertmanager-main # The K8s Service name of your Alertmanager
+      port: web
+  
+  # Tells Prometheus to look for the PrometheusRules we created earlier
+  ruleSelector:
+    matchLabels:
+      role: alert-rules
+
+
 
 
 
@@ -383,6 +402,8 @@ kind: PrometheusRule
 metadata:
   name: ai-agent-sre-rules
   namespace: monitoring
+  labels:
+    role: alert-rules
 spec:
   groups:
   - name: chaos-engineering-alerts
@@ -493,3 +514,22 @@ spec:
     webhookConfigs:
     - url: 'http://ai-agent-service.default.svc.cluster.local:8000/webhook'
       sendResolved: true # Tells the AI when the system fixes itself
+
+
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager-main # This name matches what we put in the Prometheus config!
+  namespace: monitoring
+  labels:
+    app: alertmanager
+spec:
+  selector:
+
+    app: alertmanager 
+  ports:
+  - name: web
+    port: 9093
+    targetPort: 9093
+    protocol: TCP

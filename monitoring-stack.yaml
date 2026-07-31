@@ -1,0 +1,136 @@
+# -------------------------------------------------------------------
+# CONFIGMAP: Alertmanager Config
+# -------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+data:
+  alertmanager.yml: |
+  
+  global:
+      resolve_timeout: 5m
+
+  route:
+      # Grouping by 'pod' ensures your Python agent receives a distinct webhook 
+      # for each specific pod that is failing, rather than a batched generic alert.
+      group_by: ['alertname', 'cluster', 'service', 'pod']
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 5m
+      receiver: 'python-chaos-agent'
+
+  
+  receivers:
+      - name: 'python-chaos-agent'
+        webhook_configs:
+          # UPDATE THIS URL: Point this to your Python pod's internal Kubernetes Service
+          # Format: http://<service-name>.<namespace>.svc.cluster.local:<port>/alert
+          - url: 'http://python-agent-service.default.svc.cluster.local:5000/alert'
+            send_resolved: true
+---
+# -------------------------------------------------------------------
+# DEPLOYMENT & SERVICE: Alertmanager
+# -------------------------------------------------------------------
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      containers:
+      - name: alertmanager
+        image: prom/alertmanager:v0.26.0
+        args:
+          - "--config.file=/etc/alertmanager/alertmanager.yml"
+          - "--storage.path=/alertmanager"
+        ports:
+          - containerPort: 9093
+            name: http
+        volumeMounts:
+          - name: config-volume
+            mountPath: /etc/alertmanager
+      volumes:
+        - name: config-volume
+          configMap:
+            name: alertmanager-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  selector:
+    app: alertmanager
+  ports:
+    - name: http
+      port: 9093
+      targetPort: 9093
+---
+# -------------------------------------------------------------------
+# DEPLOYMENT & SERVICE: Prometheus
+# -------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus-k8s
+      containers:
+      - name: prometheus
+        image: prom/prometheus:v2.48.0
+        args:
+          - "--config.file=/etc/prometheus/prometheus.yml"
+          - "--storage.tsdb.path=/prometheus"
+          - "--web.enable-lifecycle"
+        ports:
+          - containerPort: 9090
+            name: http
+        volumeMounts:
+          - name: config-volume
+            mountPath: /etc/prometheus
+          - name: rules-volume
+            mountPath: /etc/prometheus/rules
+      volumes:
+        - name: config-volume
+          configMap:
+            name: prometheus-config
+        - name: rules-volume
+          configMap:
+            name: prometheus-rules
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  type: ClusterIP
+  selector:
+    app: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: 9090
