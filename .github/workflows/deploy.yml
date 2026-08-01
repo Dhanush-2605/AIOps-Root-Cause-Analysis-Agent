@@ -63,4 +63,6 @@ jobs:
           sed -i "s|FRONTEND_IMAGE_PLACEHOLDER|${{ env.FRONTEND_TAG }}|g" k8s.yaml
           
           # Apply the architecture to the cluster
-          kubectl apply -f k8s.yaml
+          kubectl apply --server-side -f https://github.com/prometheus-operator/prometheus-operator/releases/download/v0.71.2/bundle.yaml
+          
+          kubectl apply -f k8s.yaml,monitoring.yaml
