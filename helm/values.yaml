@@ -1,0 +1,50 @@
+# 1. Alertmanager Configuration
+alertmanager:
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'cluster', 'service', 'pod']
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 5m
+      receiver: 'python-chaos-agent'
+      routes:
+        - matchers:
+            - alertname =~ ".*"
+          receiver: 'python-chaos-agent'
+    receivers:
+      - name: 'python-chaos-agent'
+        webhook_configs:
+          # Note: Change this URL to the exact namespace your python service is in
+          - url: 'http://python-agent-service.default.svc.cluster.local:5000/alert'
+            send_resolved: true
+
+# 2. Prometheus Configuration
+prometheus:
+  prometheusSpec:
+    # Important: Setting these to null/{} tells Prometheus to watch ALL namespaces
+    # and ignore the default Helm release label requirements.
+    
+    # Watch ServiceMonitors in all namespaces matching any label
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+
+    # Watch PrometheusRules in all namespaces matching any label
+    ruleSelectorNilUsesHelmValues: false
+    ruleSelector: {}
+    ruleNamespaceSelector: {}
+
+# 3. Disable Default Alert Rules (Optional but recommended for your use case)
+# The stack comes with ~100 pre-configured alerts. If you only want your chaos alerts, set this to false.
+defaultRules:
+  create: false
+
+# 4. Enable automatic scraping of K8s metrics (Enabled by default, explicit here for clarity)
+kubeStateMetrics:
+  enabled: true
+nodeExporter:
+  enabled: true
+kubelet:
+  enabled: true

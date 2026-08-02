@@ -103,38 +103,38 @@ resource "google_service_account_iam_member" "pod_workload_identity_binding" {
  # AI SRE AGENT SECRETS & IDENTITIES
 # ==========================================================================
 
-# 1. Secret Manager Vault for the Gemini API Key
-resource "google_secret_manager_secret" "gemini_api_key" {
-  secret_id = "gemini-api-key"
-  replication {
-    auto {}
-  }
-}
+# # 1. Secret Manager Vault for the Gemini API Key
+# resource "google_secret_manager_secret" "gemini_api_key" {
+#   secret_id = "gemini-api-key"
+#   replication {
+#     auto {}
+#   }
+# }
 
-# 2. Ingest the actual API key value into the vault safely
-resource "google_secret_manager_secret_version" "gemini_api_key_version" {
-  secret      = google_secret_manager_secret.gemini_api_key.id
-  secret_data = var.gemini_api_key
-}
+# # 2. Ingest the actual API key value into the vault safely
+# resource "google_secret_manager_secret_version" "gemini_api_key_version" {
+#   secret      = google_secret_manager_secret.gemini_api_key.id
+#   secret_data = var.gemini_api_key
+# }
 
-# 3. Dedicated Google Service Account for the CrewAI Pod
-resource "google_service_account" "ai_agent_sa" {
-  account_id   = "ai-sre-agent"
-  display_name = "AI SRE Agent Service Account"
-}
+# # 3. Dedicated Google Service Account for the CrewAI Pod
+# resource "google_service_account" "ai_agent_sa" {
+#   account_id   = "ai-sre-agent"
+#   display_name = "AI SRE Agent Service Account"
+# }
 
-# 4. Strict IAM Policy: Allow the AI Agent to read ONLY the Gemini key
-resource "google_secret_manager_secret_iam_member" "ai_agent_secret_access" {
-  secret_id = google_secret_manager_secret.gemini_api_key.id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.ai_agent_sa.email}"
-}
+# # 4. Strict IAM Policy: Allow the AI Agent to read ONLY the Gemini key
+# resource "google_secret_manager_secret_iam_member" "ai_agent_secret_access" {
+#   secret_id = google_secret_manager_secret.gemini_api_key.id
+#   role      = "roles/secretmanager.secretAccessor"
+#   member    = "serviceAccount:${google_service_account.ai_agent_sa.email}"
+# }
 
-# 5. Workload Identity Bridge: Connects GKE to GCP IAM for the AI Agent
-resource "google_service_account_iam_member" "ai_agent_workload_identity" {
-  service_account_id = google_service_account.ai_agent_sa.name
-  role               = "roles/iam.workloadIdentityUser"
+# # 5. Workload Identity Bridge: Connects GKE to GCP IAM for the AI Agent
+# resource "google_service_account_iam_member" "ai_agent_workload_identity" {
+#   service_account_id = google_service_account.ai_agent_sa.name
+#   role               = "roles/iam.workloadIdentityUser"
   
-  # Authorizes the K8s service account 'ai-agent-k8s-sa' in the default namespace
-  member = "serviceAccount:${var.project_id}.svc.id.goog[default/ai-agent-k8s-sa]"
-}
+#   # Authorizes the K8s service account 'ai-agent-k8s-sa' in the default namespace
+#   member = "serviceAccount:${var.project_id}.svc.id.goog[default/ai-agent-k8s-sa]"
+# }

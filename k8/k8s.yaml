@@ -18,7 +18,7 @@ data:
 
     -- Keep the B-tree index so your SELECT queries are optimized from day one
     CREATE INDEX IF NOT EXISTS idx_department_salary ON employee_data USING btree (department, salary);
----
+
 
 # ==========================================
 # CONFIGURATIONS, SECRETS & IDENTITIES (NEW)
@@ -41,7 +41,8 @@ data:
   DB_NAME: "mytierdb"
   POSTGRES_USER: "postgres"
   POSTGRES_DB: "mytierdb"
----
+
+
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -51,7 +52,7 @@ metadata:
     iam.gke.io/gcp-service-account: "backend-db-accessor@core-appliance-338915.iam.gserviceaccount.com"
 
     
----
+
 apiVersion: secrets-store.csi.x-k8s.io/v1
 kind: SecretProviderClass
 metadata:
@@ -63,7 +64,7 @@ spec:
       - resourceName: "projects/core-appliance-338915/secrets/db-password/versions/latest"
         path: "db-password.txt"
 
----
+
 # ==========================================
 # TIER 3: DATABASE (PostgreSQL)
 # ==========================================
@@ -76,7 +77,7 @@ spec:
   resources:
     requests:
       storage: 1Gi
----
+
 # ==========================================================================
 # PART 4: THE DATABASE CLUSTER (POSTGRESQL STATEFULSET)
 # ==========================================================================
@@ -90,7 +91,7 @@ spec:
   - port: 5432
   selector:
     app: postgres
----
+
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -158,7 +159,7 @@ spec:
       - name: postgres-init-volume
         configMap:
           name: postgres-init-script
----
+
 
 
 # ==========================================================================
@@ -232,7 +233,7 @@ spec:
           readOnly: true
           volumeAttributes:
             secretProviderClass: "gcp-db-credentials"
----
+
 apiVersion: v1
 kind: Service
 metadata:
@@ -243,7 +244,7 @@ spec:
     name: postgres
   selector:
     app: pgpool
----
+
 
 
 
@@ -284,7 +285,7 @@ spec:
           readOnly: true
           volumeAttributes:
             secretProviderClass: "gcp-db-credentials"
----
+
 apiVersion: v1
 kind: Service
 metadata:
@@ -294,11 +295,12 @@ spec:
   selector:
     app: backend
   ports:
-    - protocol: TCP
-      port: 8080
-      targetPort: 8080
+  - name: http-metrics
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
 
----
+
 
 # ==========================================
 # TIER 1: FRONTEND (React UI)
@@ -322,7 +324,7 @@ spec:
         image: FRONTEND_IMAGE_PLACEHOLDER 
         ports:
         - containerPort: 80
----
+
 apiVersion: v1
 kind: Service
 metadata:
@@ -336,7 +338,7 @@ spec:
       port: 80
       targetPort: 80
 
----
+
 
 # ==========================================
 # 4. THE SHOCK ABSORBER: Redis Message Queue
@@ -360,7 +362,7 @@ spec:
         image: redis:7-alpine
         ports:
         - containerPort: 6379
----
+
 apiVersion: v1
 kind: Service
 metadata:
@@ -371,5 +373,44 @@ spec:
   selector:
     app: redis  
 
----
 
+
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: python-chaos-agent
+  namespace: default
+  labels:
+    app: python-chaos-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: python-chaos-agent
+  template:
+    metadata:
+      labels:
+        app: python-chaos-agent
+    spec:
+      containers:
+      - name: agent
+        # Replace this with your actual image name
+        image: PYTHON_IMAGE_PLACEHOLDER
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+          name: http-web
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: python-agent-service 
+  namespace: default         
+spec:
+  selector:
+    app: python-chaos-agent
+  ports:
+    - protocol: TCP
+      port: 5000             # The port Alertmanager is sending traffic to
+      targetPort: 8000       # Forwards traffic to your FastAPI container port

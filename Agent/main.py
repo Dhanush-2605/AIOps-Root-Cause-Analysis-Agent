@@ -4,7 +4,7 @@ import json
 
 app = FastAPI()
 
-@app.post("/webhook")
+@app.post("/alert")
 async def receive_alert(request: Request):
     # 1. Parse the incoming JSON payload from Alertmanager
     payload = await request.json()

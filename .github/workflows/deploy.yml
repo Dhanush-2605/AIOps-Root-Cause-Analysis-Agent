@@ -12,7 +12,7 @@ env:
   IMAGE_NAME: nodejs-app
   CLUSTER_NAME: gke-production-cluster
   # Replace the line below with your exact provider string
-  WORKLOAD_IDENTITY_PROVIDER: 'projects/815415208014/locations/global/workloadIdentityPools/github-actions-pool-v1/providers/github-provider'
+  WORKLOAD_IDENTITY_PROVIDER: 'projects/815415208014/locations/global/workloadIdentityPools/github-actions-pool-v2/providers/github-provider'
   SERVICE_ACCOUNT: 'github-actions-pipeline@core-appliance-338915.iam.gserviceaccount.com'
 
 jobs:
@@ -42,6 +42,13 @@ jobs:
           docker build -t $BACKEND_TAG ./backend
           docker push $BACKEND_TAG
           echo "BACKEND_TAG=$BACKEND_TAG" >> $GITHUB_ENV
+        
+      - name: Build and Push Python Image
+        run: |
+          PYTHON_TAG="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/python:${GITHUB_SHA}"
+          docker build -t $PYTHON_TAG ./Agent
+          docker push $PYTHON_TAG
+          echo "PYTHON_TAG=$PYTHON_TAG" >> $GITHUB_ENV
 
       - name: Build and Push Frontend Image
         run: |
@@ -61,8 +68,23 @@ jobs:
           # Inject the newly built image tags into the K8s manifest
           sed -i "s|BACKEND_IMAGE_PLACEHOLDER|${{ env.BACKEND_TAG }}|g" k8s.yaml
           sed -i "s|FRONTEND_IMAGE_PLACEHOLDER|${{ env.FRONTEND_TAG }}|g" k8s.yaml
-          
-          # Apply the architecture to the cluster
-          kubectl apply --server-side -f https://github.com/prometheus-operator/prometheus-operator/releases/download/v0.71.2/bundle.yaml
-          
-          kubectl apply -f k8s.yaml,monitoring.yaml
+          sed -i "s|PYTHON_IMAGE_PLACEHOLDER|${{ env.PYTHON_TAG }}|g" k8s.yaml
+
+      - name: Deploy Prometheus Stack via Helm
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+                  helm repo update
+                  
+                  helm upgrade --install prometheus-stack prometheus-community/kube-prometheus-stack \
+                    --namespace monitoring \
+                    --create-namespace \
+                    -f helm/values.yaml \
+                    --atomic \
+                    --timeout 10m
+
+      - name: Apply Custom Manifests
+        run: |
+              kubectl apply -f k8s/ -R
+
+
+       
