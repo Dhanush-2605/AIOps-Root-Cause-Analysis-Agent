@@ -85,7 +85,7 @@ jobs:
 
       - name: Apply Custom Manifests
         run: |
-              kubectl apply -f k8s/ -R
+              kubectl apply -f k8/
 
 
        
