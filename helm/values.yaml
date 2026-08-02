@@ -47,6 +47,7 @@ kubeStateMetrics:
 
 kubelet:
   enabled: true
+  namespace: monitoring 
 
 
 nodeExporter:
