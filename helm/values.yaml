@@ -53,6 +53,9 @@ kubelet:
 nodeExporter:
   enabled: false
 
+coreDns:
+  enabled: false
+  
 kubeApiServer:
   enabled: false
 kubeScheduler:
