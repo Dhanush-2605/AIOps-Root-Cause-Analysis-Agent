@@ -44,7 +44,21 @@ defaultRules:
 # 4. Enable automatic scraping of K8s metrics (Enabled by default, explicit here for clarity)
 kubeStateMetrics:
   enabled: true
-nodeExporter:
-  enabled: true
+
 kubelet:
   enabled: true
+
+
+nodeExporter:
+  enabled: false
+
+kubeApiServer:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false

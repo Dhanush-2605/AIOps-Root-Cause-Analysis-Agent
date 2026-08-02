@@ -34,13 +34,6 @@ spec:
       annotations:
         summary: "Pod {{ $labels.pod }} is crash looping."
 
-    - alert: NodeOffline
-      expr: kube_node_status_condition{condition="Ready",status="true"} == 0
-      for: 3m
-      labels: { severity: disaster }
-      annotations:
-        summary: "Node {{ $labels.node }} is offline."
-
     - alert: NetworkPacketDrops
       expr: rate(container_network_receive_drop_total{container!="", pod!=""}[5m]) > 0.1
       for: 2m
