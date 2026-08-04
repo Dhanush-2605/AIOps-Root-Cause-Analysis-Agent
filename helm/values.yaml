@@ -50,6 +50,10 @@ kubelet:
   namespace: monitoring 
 
 
+grafana:
+  enabled: false
+
+
 nodeExporter:
   enabled: false
 
