@@ -1,5 +1,11 @@
 # 1. Alertmanager Configuration
 alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests: { memory: "128Mi", cpu: "50m" }
+      limits:   { memory: "256Mi", cpu: "150m" }
+
+
   config:
     global:
       resolve_timeout: 5m
@@ -23,6 +29,10 @@ alertmanager:
 # 2. Prometheus Configuration
 prometheus:
   prometheusSpec:
+    resources:
+      requests: { memory: "512Mi", cpu: "200m" }
+      limits:   { memory: "1Gi", cpu: "500m" }
+
     # Important: Setting these to null/{} tells Prometheus to watch ALL namespaces
     # and ignore the default Helm release label requirements.
     
@@ -43,6 +53,10 @@ defaultRules:
 
 # 4. Enable automatic scraping of K8s metrics (Enabled by default, explicit here for clarity)
 kubeStateMetrics:
+  resources:
+    requests: { memory: "128Mi", cpu: "50m" }
+    limits:   { memory: "256Mi", cpu: "150m" }
+
   enabled: true
 
 kubelet:
