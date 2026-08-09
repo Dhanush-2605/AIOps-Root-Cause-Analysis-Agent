@@ -271,7 +271,7 @@ spec:
       serviceAccountName: backend-sa # <--- Wears the exact same ID badge
       containers:
       - name: backend
-        image: asia-south1-docker.pkg.dev/core-appliance-338915/nodejs-app-repo/backend:3441ba6c6c414366733af1e1a749cf5dec519958
+        image: BACKEND_IMAGE_PLACEHOLDER 
         ports:
         - containerPort: 8080
         envFrom:
@@ -330,7 +330,7 @@ spec:
     spec:
       containers:
       - name: frontend
-        image: asia-south1-docker.pkg.dev/core-appliance-338915/nodejs-app-repo/frontend:3441ba6c6c414366733af1e1a749cf5dec519958
+        image: FRONTEND_IMAGE_PLACEHOLDER
         ports:
         - containerPort: 80
         resources:
@@ -417,7 +417,7 @@ spec:
       containers:
       - name: agent
         # Replace this with your actual image name
-        image: asia-south1-docker.pkg.dev/core-appliance-338915/nodejs-app-repo/python:3441ba6c6c414366733af1e1a749cf5dec519958
+        image: PYTHON_IMAGE_PLACEHOLDER
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
