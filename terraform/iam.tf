@@ -26,8 +26,8 @@ resource "google_project_iam_member" "pipeline_roles" {
 
 # 4. Create a Workload Identity Pool for GitHub
 resource "google_iam_workload_identity_pool" "github_pool" {
-  workload_identity_pool_id = "github-actions-pool-v2"
-  display_name              = "GitHub Actions Pool-v2"
+  workload_identity_pool_id = "github-actions-pool-v3"
+  display_name              = "GitHub Actions Pool-v3"
 }
 
 # 5. Create the OIDC Provider connecting GitHub to GCP
