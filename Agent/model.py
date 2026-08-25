@@ -12,8 +12,8 @@ load_dotenv()
 groq_key = os.getenv("GROQ_API_KEY")
 # Initialize ChatGroq (using Llama 70B)
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
+    model="openai/gpt-oss-120b",
     temperature=0.1,
     groq_api_key=groq_key
 )
-print(llm.invoke("Will thor Defeat DOOM in secret wars?"))  
+# print(llm.invoke("Will thor Defeat DOOM in secret wars?"))  

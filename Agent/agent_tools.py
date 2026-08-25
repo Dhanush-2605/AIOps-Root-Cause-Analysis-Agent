@@ -10,43 +10,56 @@ import re
 import google.auth
 import google.auth.transport.requests
 
-def get_gke_auth_token():
-    """Fetches a Google OAuth token for GKE Workload Identity."""
-    try:
-        credentials, _ = google.auth.default(
-            scopes=['https://www.googleapis.com/auth/cloud-platform']
-        )
-        auth_req = google.auth.transport.requests.Request()
-        credentials.refresh(auth_req)
-        return credentials.token
-    except Exception as e:
-        print(f"Failed to fetch Google Auth token: {e}")
-        return None
+# def get_gke_auth_token():
+#     """Fetches a Google OAuth token for GKE Workload Identity."""
+#     try:
+#         credentials, _ = google.auth.default(
+#             scopes=['https://www.googleapis.com/auth/cloud-platform']
+#         )
+#         auth_req = google.auth.transport.requests.Request()
+#         credentials.refresh(auth_req)
+#         return credentials.token
+#     except Exception as e:
+#         print(f"Failed to fetch Google Auth token: {e}")
+#         return None
 
-try:
-    # 1. Try standard in-cluster (Works if NO Workload Identity)
-    config.load_incluster_config()
-    v1_api = client.CoreV1Api()
+# try:
+#     # 1. Try standard in-cluster (Works if NO Workload Identity)
+#     config.load_incluster_config()
+#     v1_api = client.CoreV1Api()
     
-    # 2. If we are in GKE with Workload Identity, we must inject the token manually
-    token = get_gke_auth_token()
-    if token:
-        v1_api.api_client.configuration.api_key['authorization'] = f"Bearer {token}"
+#     # 2. If we are in GKE with Workload Identity, we must inject the token manually
+#     token = get_gke_auth_token()
+#     if token:
+#         v1_api.api_client.configuration.api_key['authorization'] = f"Bearer {token}"
         
-    # Initialize Apps API for scaling deployments/statefulsets
-    apps_v1_api = client.AppsV1Api(v1_api.api_client)
+#     # Initialize Apps API for scaling deployments/statefulsets
+#     apps_v1_api = client.AppsV1Api(v1_api.api_client)
         
-except config.ConfigException:
-    try:
-        # 3. Fallback for local testing (reading ~/.kube/config)
-        config.load_kube_config()
-        v1_api = client.CoreV1Api()
-        apps_v1_api = client.AppsV1Api()
-    except Exception as e:
-        print(f"Warning: Could not configure kubernetes client. {e}")
-        v1_api = client.CoreV1Api() # Initialize empty so it doesn't crash on import
-        apps_v1_api = client.AppsV1Api()
+# except config.ConfigException:
+#     try:
+#         # 3. Fallback for local testing (reading ~/.kube/config)
+#         config.load_kube_config()
+#         v1_api = client.CoreV1Api()
+#         apps_v1_api = client.AppsV1Api()
+#     except Exception as e:
+#         print(f"Warning: Could not configure kubernetes client. {e}")
+#         v1_api = client.CoreV1Api() # Initialize empty so it doesn't crash on import
+#         apps_v1_api = client.AppsV1Api()
 
+
+
+def get_gke_client():
+    try:
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            config.load_kube_config()
+
+        v1 = client.CoreV1Api()
+        return v1
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize Kubernetes client: {e}")
 
 
 @tool
@@ -62,6 +75,7 @@ def fetch_filtered_pod_logs(namespace: str, pod_name: str, tail_lines: int = 100
     """
     try:
         # Fetch the raw logs
+        v1_api = get_gke_client()
         logs = v1_api.read_namespaced_pod_log(name=pod_name, namespace=namespace, tail_lines=tail_lines)
        
         error_patterns = re.compile(r"(error|fatal|exception|fail|timeout|oomkilled|denied)", re.IGNORECASE)
@@ -83,6 +97,7 @@ def get_pod_status(namespace: str, pod_name: str) -> str:
     Use this tool to check if a pod is in CrashLoopBackOff or Pending state.
     """
     try:
+        v1_api = get_gke_client()
         pod = v1_api.read_namespaced_pod(name=pod_name, namespace=namespace)
         
         status_info = {
@@ -113,34 +128,36 @@ def get_pod_status(namespace: str, pod_name: str) -> str:
     except ApiException as e:
         return f"Kubernetes API Error: {e.reason}"
 
-@tool
-def query_prometheus(promql_query: str) -> str:
-    """
-    Executes a PromQL query against the internal Prometheus server.
-    Use this to check CPU, RAM, network latency, or historical trends.
-    
-    Args:
-        promql_query: A valid Prometheus query string.
-    """
 
-    PROMETHEUS_URL = "http://prometheus-main.monitoring.svc.cluster.local:9090/api/v1/query"
+
+# @tool
+# def query_prometheus(promql_query: str) -> str:
+#     """
+#     Executes a PromQL query against the internal Prometheus server.
+#     Use this to check CPU, RAM, network latency, or historical trends.
     
-    try:
-        response = requests.get(PROMETHEUS_URL, params={'query': promql_query}, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+#     Args:
+#         promql_query: A valid Prometheus query string.
+#     """
+
+#     PROMETHEUS_URL = "http://prometheus-main.monitoring.svc.cluster.local:9090/api/v1/query"
+    
+#     try:
+#         response = requests.get(PROMETHEUS_URL, params={'query': promql_query}, timeout=10)
+#         response.raise_for_status()
+#         data = response.json()
         
-        results = data.get('data', {}).get('result', [])
-        if not results:
-            return f"Prometheus returned no data for query: {promql_query}"
+#         results = data.get('data', {}).get('result', [])
+#         if not results:
+#             return f"Prometheus returned no data for query: {promql_query}"
             
-        # Format the output so the LLM can easily read it
-        formatted_results = []
-        for result in results:
-            metric_labels = result.get('metric', {})
-            value = result.get('value', [None, "No Value"])[1]
-            formatted_results.append(f"Labels: {metric_labels} | Value: {value}")
+#         # Format the output so the LLM can easily read it
+#         formatted_results = []
+#         for result in results:
+#             metric_labels = result.get('metric', {})
+#             value = result.get('value', [None, "No Value"])[1]
+#             formatted_results.append(f"Labels: {metric_labels} | Value: {value}")
             
-        return "\n".join(formatted_results)
-    except requests.exceptions.RequestException as e:
-        return f"Failed to reach Prometheus API: {str(e)}"
+#         return "\n".join(formatted_results)
+#     except requests.exceptions.RequestException as e:
+#         return f"Failed to reach Prometheus API: {str(e)}"
