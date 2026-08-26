@@ -57,11 +57,14 @@ def get_gke_client():
             config.load_kube_config()
 
         v1 = client.CoreV1Api()
-        return v1
+        apps_v1 = client.AppsV1Api()
+        
+        # MUST return both as a tuple
+        return v1, apps_v1
     except Exception as e:
         raise RuntimeError(f"Failed to initialize Kubernetes client: {e}")
-
-
+    
+    
 @tool
 def fetch_filtered_pod_logs(namespace: str, pod_name: str, tail_lines: int = 100) -> str:
     """
@@ -74,8 +77,8 @@ def fetch_filtered_pod_logs(namespace: str, pod_name: str, tail_lines: int = 100
         tail_lines: How many recent lines to fetch before filtering.
     """
     try:
-        # Fetch the raw logs
-        v1_api = get_gke_client()
+        
+        v1_api, apps_v1_api = get_gke_client()
         logs = v1_api.read_namespaced_pod_log(name=pod_name, namespace=namespace, tail_lines=tail_lines)
        
         error_patterns = re.compile(r"(error|fatal|exception|fail|timeout|oomkilled|denied)", re.IGNORECASE)
@@ -97,9 +100,9 @@ def get_pod_status(namespace: str, pod_name: str) -> str:
     Use this tool to check if a pod is in CrashLoopBackOff or Pending state.
     """
     try:
-        v1_api = get_gke_client()
+        v1_api, _ = get_gke_client()
         pod = v1_api.read_namespaced_pod(name=pod_name, namespace=namespace)
-        
+                
         status_info = {
             "phase": pod.status.phase,
             "pod_ip": pod.status.pod_ip,

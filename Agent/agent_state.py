@@ -4,12 +4,18 @@ import operator
 from langchain_core.messages import BaseMessage
 
 
+class K8sAction(BaseModel):
+    action_type: str = Field(description="Must be one of: delete_pod, scale_deployment, scale_statefulset, restart_deployment, increase_memory_limit, increase_cpu_limit, kill_idle_db_connections")
+    target_name: str = Field(description="Name of the specific pod, deployment, or statefulset.")
+    namespace: str = Field(default="default", description="The Kubernetes namespace.")
+    value: str = Field(default="", description="Value for scaling (e.g., '3') or limits (e.g., '512Mi'). Leave empty if not applicable.")
+
 
 class RemediationPlan(BaseModel):
-    root_cause: str = Field(description="A 2-sentence summary of why the issue occurred based on the logs/metrics.")
+    root_cause: str = Field(description="A few sentence summary of why the issue occurred based on the logs/metrics.")
     severity: str = Field(description="Must be one of: Low, Medium, High, Critical")
-    proposed_commands: List[str] = Field(description="Exact kubectl or bash commands to safely remediate the issue.")
-    requires_human_approval: bool = Field(default=True, description="Always true for production-altering commands.")
+    proposed_actions: List[K8sAction] = Field(description="Structured Kubernetes actions to safely remediate the issue.")
+    requires_human_approval: bool = Field(default=True)
 
 class CriticReview(BaseModel):
     is_safe: bool = Field(description="True if the commands are safe to run, False if they are destructive or incorrect.")
