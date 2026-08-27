@@ -5,6 +5,7 @@ import requests
 import json
 import re
 
+from langchain_google_community import GoogleSearchAPIWrapper
 
 
 import google.auth
@@ -64,7 +65,36 @@ def get_gke_client():
     except Exception as e:
         raise RuntimeError(f"Failed to initialize Kubernetes client: {e}")
     
+
+
+
+try:
+    search_wrapper = GoogleSearchAPIWrapper()
+except Exception as e:
+    print(f"Warning: Google Search API not configured. Missing env vars. {e}")
+    search_wrapper = None
+
+@tool
+def search_google(query: str) -> str:
+    """
+    Searches Google for troubleshooting steps, Kubernetes documentation, or specific error messages.
+    Use this tool ONLY when you encounter an unfamiliar error code or need external documentation
+    to formulate a fix that isn't covered by internal tools or SOPs.
     
+    Args:
+        query: The exact error message or technical question to search for.
+    """
+    if not search_wrapper:
+        return "Error: Google Search tool is not configured on the server. Cannot perform web search."
+    
+    try:
+        # Run the search and return the top snippets
+        return search_wrapper.run(query)
+    except Exception as e:
+        return f"Google Search failed: {str(e)}"
+    
+    
+
 @tool
 def fetch_filtered_pod_logs(namespace: str, pod_name: str, tail_lines: int = 100) -> str:
     """
