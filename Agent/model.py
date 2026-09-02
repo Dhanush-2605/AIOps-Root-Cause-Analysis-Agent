@@ -16,4 +16,6 @@ llm = ChatGroq(
     temperature=0.1,
     groq_api_key=groq_key
 )
+
+
 # print(llm.invoke("Will thor Defeat DOOM in secret wars?"))  
