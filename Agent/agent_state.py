@@ -39,3 +39,9 @@ class AgentState(TypedDict):
     execution_logs: str                      # Terminal output after running the commands
     verification_passed: bool                # Did the Prometheus metric recover?
     verification_attempts: int               # Counter to prevent infinite loops (max 3)
+    
+    
+    incident_start_time: str   # Alert timestamp or start of workflow
+    incident_end_time: str     # Post-execution completion timestamp
+    post_mortem_md: str        # Generated Markdown Post-Mortem
+    github_pr_url: str

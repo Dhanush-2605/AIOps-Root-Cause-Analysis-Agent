@@ -11,7 +11,7 @@ import datetime
 from langgraph.types import interrupt
 from langgraph.checkpoint.memory import MemorySaver
 
-
+from github_utils import commit_post_mortem_to_repo
 import json
 from model import llm
 
@@ -269,6 +269,75 @@ def executor_node(state: AgentState):
             break
 
     return {"execution_logs": output_logs}
+
+def reporter_node(state: AgentState):
+    """Generates an SRE Blameless Post-Mortem in Markdown and commits it to GitHub."""
+    print("\n📝 [REPORTER] Generating automated SRE Post-Mortem...")
+    
+    alert = state.get("alert_payload", {})
+    context = state.get("context_gathered", "")
+    plan = state.get("proposed_plan")
+    logs = state.get("execution_logs", "")
+    start_time_str = state.get("incident_start_time", datetime.datetime.utcnow().isoformat())
+    end_time_str = datetime.datetime.utcnow().isoformat()
+    
+    try:
+        t_start = datetime.datetime.fromisoformat(start_time_str)
+        t_end = datetime.datetime.fromisoformat(end_time_str)
+        mttr_seconds = int((t_end - t_start).total_seconds())
+    except Exception:
+        mttr_seconds = 0
+
+    alert_name = alert.get("alertname") or alert.get("labels", {}).get("alertname", "UnknownAlert")
+    target = alert.get("labels", {}).get("deployment") or alert.get("labels", {}).get("pod", "UnknownResource")
+
+    prompt = f"""
+    You are a Principal Site Reliability Engineer (SRE). Generate a comprehensive, professional, blameless incident post-mortem in Markdown format based on the following execution data:
+
+    ### Incident Overview
+    - Alert Name: {alert_name}
+    - Target Resource: {target}
+    - Incident Start: {start_time_str}
+    - Resolution Completed: {end_time_str}
+    - Calculated MTTR: {mttr_seconds} seconds
+
+    ### Investigation Findings & Context
+    {context}
+
+    ### Executed Remediation Plan
+    {plan}
+
+    ### K8s Execution Logs
+    {logs}
+
+    Please write the post-mortem using this structure:
+    # Incident Post-Mortem: {alert_name} ({target})
+    ## Executive Summary
+    ## Incident Timeline (MTTD / MTTR)
+    ## Root Cause Analysis (5 Whys)
+    ## Remediation Actions Executed
+    ## Recommended Long-Term Preventive Actions
+    """
+
+    report_response = llm.invoke([
+        SystemMessage(content="You are an expert SRE writer creating blameless post-mortems."),
+        HumanMessage(content=prompt)
+    ])
+    
+    post_mortem_markdown = report_response.content
+
+    # Push directly to the repo
+    commit_url = commit_post_mortem_to_repo(
+        post_mortem_content=post_mortem_markdown,
+        alert_name=alert_name,
+        target_resource=target
+    )
+
+    return {
+        "incident_end_time": end_time_str,
+        "post_mortem_md": post_mortem_markdown,
+        "github_commit_url": commit_url
+    }
 
 workflow = StateGraph(AgentState)
 
