@@ -363,11 +363,15 @@ workflow.add_edge("proposer_node", "critic_node")
 workflow.add_edge("critic_node", "executor_node")
 
 # 4. Executor finishes the workflow
-workflow.add_edge("executor_node", END)
+workflow.add_edge("executor_node", "reporter_node")
+workflow.add_edge("reporter_node", END)
 
 # IMPORTANT: You MUST use a checkpointer so the graph can pause and resume for HITL
 memory = MemorySaver()
 agent_app = workflow.compile(checkpointer=memory)
+
+
+
 # 4. Run the Test
 from langgraph.types import Command
 import uuid
@@ -381,7 +385,8 @@ if __name__ == "__main__":
         "alert_payload": sample_alert_payload,
         "verification_attempts": 0,
         "is_safe": True,
-        "critic_feedback": ""
+        "critic_feedback": "",
+        "incident_start_time": datetime.datetime.utcnow().isoformat()
     }
 
     print("--- STARTING AGENT INVESTIGATION & REMEDIATION ---")
