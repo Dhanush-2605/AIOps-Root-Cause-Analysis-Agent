@@ -189,12 +189,13 @@ def get_action_attr(action, key: str, default=None):
         return action.get(key, default)
     return getattr(action, key, default)
 
+from kubernetes.stream import stream
+import datetime
+
 def executor_node(state: AgentState):
     """Executes actions via K8s SDK with HITL approval and safe checkpoint deserialization."""
     # Initialize Kubernetes SDK Clients inside node
-    # 
     v1_api, apps_v1_api = get_gke_client()
-
 
     plan = state.get("proposed_plan")
     is_safe = state.get("is_safe", True)
@@ -240,17 +241,19 @@ def executor_node(state: AgentState):
         print(f"\n🚀 [EXECUTING K8S SDK] Calling API for: {action_summary}...")
 
         try:
+            # ---------------------------------------------------------
+            # 1. INFRASTRUCTURE & POD OPERATIONS 
+            # ---------------------------------------------------------
             if action_type == "delete_pod":
-                res = v1_api.delete_namespaced_pod(name=target_name, namespace=namespace)
-                output_logs += f"\n[SUCCESS] Deleted pod '{target_name}' in namespace '{namespace}'"
+                v1_api.delete_namespaced_pod(name=target_name, namespace=namespace)
+                output_logs += f"\n[SUCCESS] Deleted pod '{target_name}' in '{namespace}'"
                 print(f"   └─ ✅ Pod deleted successfully.")
 
             elif action_type == "restart_deployment":
-                import datetime
                 now = datetime.datetime.utcnow().isoformat() + "Z"
                 body = {"spec": {"template": {"metadata": {"annotations": {"kubectl.kubernetes.io/restartedAt": now}}}}}
                 apps_v1_api.patch_namespaced_deployment(name=target_name, namespace=namespace, body=body)
-                output_logs += f"\n[SUCCESS] Restarted deployment '{target_name}' in namespace '{namespace}'"
+                output_logs += f"\n[SUCCESS] Restarted deployment '{target_name}' in '{namespace}'"
                 print(f"   └─ ✅ Deployment restart triggered.")
 
             elif action_type == "scale_deployment":
@@ -258,6 +261,56 @@ def executor_node(state: AgentState):
                 apps_v1_api.patch_namespaced_deployment_scale(name=target_name, namespace=namespace, body=body)
                 output_logs += f"\n[SUCCESS] Scaled deployment '{target_name}' to {val}"
                 print(f"   └─ ✅ Deployment scaled to {val}.")
+
+            elif action_type == "increase_memory_limit":
+                # Patches the first container in the Deployment to increase memory limit
+                body = {"spec": {"template": {"spec": {"containers": [{"name": target_name, "resources": {"limits": {"memory": val}}}]}}}}
+                apps_v1_api.patch_namespaced_deployment(name=target_name, namespace=namespace, body=body)
+                output_logs += f"\n[SUCCESS] Increased memory limit for '{target_name}' to {val}"
+                print(f"   └─ ✅ Memory limit increased.")
+
+            elif action_type == "increase_cpu_limit":
+                body = {"spec": {"template": {"spec": {"containers": [{"name": target_name, "resources": {"limits": {"cpu": val}}}]}}}}
+                apps_v1_api.patch_namespaced_deployment(name=target_name, namespace=namespace, body=body)
+                output_logs += f"\n[SUCCESS] Increased CPU limit for '{target_name}' to {val}"
+                print(f"   └─ ✅ CPU limit increased.")
+
+            # ---------------------------------------------------------
+            # 2. IN-PROCESS APPLICATION OPERATIONS (Via k8s stream exec)
+            # ---------------------------------------------------------
+            elif action_type == "kill_idle_db_connections":
+                # Target must be the Postgres pod name
+                exec_cmd = ["psql", "-U", "postgres", "-c", "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'idle';"]
+                resp = stream(v1_api.connect_get_namespaced_pod_exec, name=target_name, namespace=namespace, command=exec_cmd, stderr=True, stdin=False, stdout=True, tty=False)
+                output_logs += f"\n[SUCCESS] Dropped idle DB connections on '{target_name}': {resp}"
+                print(f"   └─ ✅ DB Connections dropped.")
+
+            elif action_type == "kill_container_process":
+                pid = val or "1"
+                exec_cmd = ["/bin/sh", "-c", f"kill -15 {pid} || kill -9 {pid}"]
+                resp = stream(v1_api.connect_get_namespaced_pod_exec, name=target_name, namespace=namespace, command=exec_cmd, stderr=True, stdin=False, stdout=True, tty=False)
+                output_logs += f"\n[SUCCESS] Killed PID {pid} in '{target_name}': {resp}"
+                print(f"   └─ ✅ Process terminated.")
+
+            elif action_type == "abort_hanging_requests":
+                threshold = val or "30"
+                exec_cmd = ["curl", "-s", "-X", "POST", f"http://127.0.0.1:8080/admin/requests/abort?threshold={threshold}"]
+                resp = stream(v1_api.connect_get_namespaced_pod_exec, name=target_name, namespace=namespace, command=exec_cmd, stderr=True, stdin=False, stdout=True, tty=False)
+                output_logs += f"\n[SUCCESS] Aborted requests exceeding {threshold}s on '{target_name}': {resp}"
+                print(f"   └─ ✅ Hanging requests aborted.")
+
+            elif action_type == "trip_circuit_breaker":
+                service = val or "all"
+                exec_cmd = ["curl", "-s", "-X", "POST", f"http://127.0.0.1:8080/admin/circuit-breaker/trip?service={service}"]
+                resp = stream(v1_api.connect_get_namespaced_pod_exec, name=target_name, namespace=namespace, command=exec_cmd, stderr=True, stdin=False, stdout=True, tty=False)
+                output_logs += f"\n[SUCCESS] Tripped circuit breaker for '{service}' on '{target_name}': {resp}"
+                print(f"   └─ ✅ Circuit breaker tripped.")
+
+            elif action_type == "clear_app_cache":
+                exec_cmd = ["curl", "-s", "-X", "POST", "http://127.0.0.1:8080/admin/cache/clear"]
+                resp = stream(v1_api.connect_get_namespaced_pod_exec, name=target_name, namespace=namespace, command=exec_cmd, stderr=True, stdin=False, stdout=True, tty=False)
+                output_logs += f"\n[SUCCESS] Cleared application cache on '{target_name}': {resp}"
+                print(f"   └─ ✅ Cache cleared.")
 
             else:
                 output_logs += f"\n[WARNING] Action type '{action_type}' is not currently implemented in SDK router."
@@ -269,6 +322,10 @@ def executor_node(state: AgentState):
             break
 
     return {"execution_logs": output_logs}
+
+
+
+
 
 def reporter_node(state: AgentState):
     """Generates an SRE Blameless Post-Mortem in Markdown and commits it to GitHub."""

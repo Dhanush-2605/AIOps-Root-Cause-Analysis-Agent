@@ -1,6 +1,9 @@
 import os
 import datetime
 from github import Github, GithubException
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def commit_post_mortem_to_repo(
     post_mortem_content: str, 
@@ -10,7 +13,8 @@ def commit_post_mortem_to_repo(
     
     """Commits the Post-Mortem Markdown file directly to the repository's default branch."""
     github_token = os.getenv("GITHUB_TOKEN")
-    repo_name = os.getenv("GITHUB_REPO")  # e.g., "your-username/k8s-infra-repo"
+    repo_name = os.getenv("GITHUB_REPO") 
+    print(github_token, repo_name)
     
     if not github_token or not repo_name:
         return "GitHub integration skipped: GITHUB_TOKEN or GITHUB_REPO not configured in environment."
@@ -41,3 +45,7 @@ def commit_post_mortem_to_repo(
     except GithubException as e:
         print(f"❌ GitHub API Error: {e}")
         return f"Failed to commit to repository: {str(e)}"
+    
+
+
+print(commit_post_mortem_to_repo("# Sample Post-Mortem\n\nThis is a sample post-mortem content for testing purposes.", "Sample Alert", "Sample Resource"))

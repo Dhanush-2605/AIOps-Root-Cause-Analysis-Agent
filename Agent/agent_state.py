@@ -1,15 +1,52 @@
-from typing import TypedDict, List, Annotated, Sequence
+from typing import TypedDict, List, Annotated, Sequence, Literal, Optional
 from pydantic import BaseModel, Field
 import operator
 from langchain_core.messages import BaseMessage
 
 
 class K8sAction(BaseModel):
-    action_type: str = Field(description="Must be one of: delete_pod, scale_deployment, scale_statefulset, restart_deployment, increase_memory_limit, increase_cpu_limit, kill_idle_db_connections")
-    target_name: str = Field(description="Name of the specific pod, deployment, or statefulset.")
-    namespace: str = Field(default="default", description="The Kubernetes namespace.")
-    value: str = Field(default="", description="Value for scaling (e.g., '3') or limits (e.g., '512Mi'). Leave empty if not applicable.")
-
+    action_type: Literal[
+        "scale_deployment",
+        "delete_pod",
+        "restart_deployment",
+        "increase_memory_limit",
+        "increase_cpu_limit",
+        "kill_idle_db_connections",
+        "kill_container_process",       
+        "abort_hanging_requests",       
+        "trip_circuit_breaker",         
+        "clear_app_cache"               
+    ] = Field(
+        ...,
+        description="The precise remediation action to execute. Must match exactly one of the permitted options."
+    )
+    
+    target_resource: str = Field(
+        ..., 
+        description="The exact name of the specific pod, deployment, or service to target."
+    )
+    
+    namespace: str = Field(
+        default="default", 
+        description="The Kubernetes namespace where the target resource lives."
+    )
+    
+    value: Optional[str] = Field(
+        None, 
+        description=(
+            "Action parameters: "
+            "- For scaling/limits: e.g., '3' or '512Mi'. "
+            "- For 'kill_container_process': PID (e.g., '142'). "
+            "- For 'abort_hanging_requests': max duration in seconds (e.g., '30'). "
+            "- For 'trip_circuit_breaker': service name (e.g., 'stripe_api'). "
+            "- Leave null if the action requires no parameters."
+        )
+    )
+    
+    reasoning: str = Field(
+        ..., 
+        description="A brief explanation of why this specific action safely resolves the root cause. This will be shown to human SREs for approval."
+    )
 
 class RemediationPlan(BaseModel):
     root_cause: str = Field(description="A few sentence summary of why the issue occurred based on the logs/metrics.")
