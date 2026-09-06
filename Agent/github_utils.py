@@ -1,5 +1,5 @@
 import os
-import datetime
+from datetime import datetime, timezone
 from github import Github, GithubException
 from dotenv import load_dotenv
 
@@ -24,7 +24,7 @@ def commit_post_mortem_to_repo(
         repo = g.get_repo(repo_name)
         
         # 1. Format file path & commit message
-        timestamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         clean_alert = alert_name.lower().replace(" ", "-")
         file_path = f"incidents/{timestamp}-{clean_alert}.md"
         
@@ -48,4 +48,3 @@ def commit_post_mortem_to_repo(
     
 
 
-print(commit_post_mortem_to_repo("# Sample Post-Mortem\n\nThis is a sample post-mortem content for testing purposes.", "Sample Alert", "Sample Resource"))

@@ -1,0 +1,93 @@
+---
+# Scenario 1: auth-service deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: default
+  labels:
+    app: auth-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+    spec:
+      containers:
+      - name: auth-container
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "250m"
+            memory: "512Mi"
+
+---
+# Scenario 2: logger-error standalone pod
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logger-error
+  namespace: default
+  labels:
+    app: logger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: logger
+  template:
+    metadata:
+      labels:
+        app: logger
+    spec:
+      containers:
+      - name: logger-container
+        image: busybox
+        command: ["/bin/sh", "-c", "while true; do echo '[ERROR] OutOfMemory: Java heap space'; sleep 2; done"]
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "250m"
+            memory: "512Mi"
+---
+# Scenario 3: user-service deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  namespace: default
+  labels:
+    app: user-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: user-service
+  template:
+    metadata:
+      labels:
+        app: user-service
+    spec:
+      containers:
+      - name: user-container
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "250m"
+            memory: "512Mi"

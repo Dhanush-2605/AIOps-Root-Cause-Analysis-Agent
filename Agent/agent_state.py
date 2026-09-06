@@ -21,7 +21,7 @@ class K8sAction(BaseModel):
         description="The precise remediation action to execute. Must match exactly one of the permitted options."
     )
     
-    target_resource: str = Field(
+    target_name: str = Field(
         ..., 
         description="The exact name of the specific pod, deployment, or service to target."
     )
@@ -82,3 +82,5 @@ class AgentState(TypedDict):
     incident_end_time: str     # Post-execution completion timestamp
     post_mortem_md: str        # Generated Markdown Post-Mortem
     github_pr_url: str
+    
+    hitl_route: str # 'execute', 'abort', or 'replan'

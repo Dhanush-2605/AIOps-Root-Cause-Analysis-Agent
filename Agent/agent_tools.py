@@ -74,24 +74,24 @@ except Exception as e:
     print(f"Warning: Google Search API not configured. Missing env vars. {e}")
     search_wrapper = None
 
-@tool
-def search_google(query: str) -> str:
-    """
-    Searches Google for troubleshooting steps, Kubernetes documentation, or specific error messages.
-    Use this tool ONLY when you encounter an unfamiliar error code or need external documentation
-    to formulate a fix that isn't covered by internal tools or SOPs.
+# @tool
+# def search_google(query: str) -> str:
+#     """
+#     Searches Google for troubleshooting steps, Kubernetes documentation, or specific error messages.
+#     Use this tool ONLY when you encounter an unfamiliar error code or need external documentation
+#     to formulate a fix that isn't covered by internal tools or SOPs.
     
-    Args:
-        query: The exact error message or technical question to search for.
-    """
-    if not search_wrapper:
-        return "Error: Google Search tool is not configured on the server. Cannot perform web search."
+#     Args:
+#         query: The exact error message or technical question to search for.
+#     """
+#     if not search_wrapper:
+#         return "Error: Google Search tool is not configured on the server. Cannot perform web search."
     
-    try:
-        # Run the search and return the top snippets
-        return search_wrapper.run(query)
-    except Exception as e:
-        return f"Google Search failed: {str(e)}"
+#     try:
+#         # Run the search and return the top snippets
+#         return search_wrapper.run(query)
+#     except Exception as e:
+#         return f"Google Search failed: {str(e)}"
     
     
 

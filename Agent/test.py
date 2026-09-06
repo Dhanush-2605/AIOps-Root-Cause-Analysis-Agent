@@ -1,7 +1,15 @@
-import requests
+from datetime import datetime, timezone
 
-session = requests.Session()
-session.trust_env = False  # Bypasses local proxy settings
+end_time_str = datetime.now(timezone.utc).isoformat()
 
-response = session.post("http://127.0.0.1:8000/evaluate-prompt", json={"prompt": "Hello"})
-print(response.json())
+print(end_time_str)
+
+now = datetime.now().isoformat() + "Z"
+
+t_end = datetime.fromisoformat(end_time_str)
+
+
+timestamp = datetime.now(timezone.utc).isoformat()
+
+print(t_end)
+print(timestamp)

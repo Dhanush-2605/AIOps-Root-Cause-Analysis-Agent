@@ -1,0 +1,20 @@
+{
+  "receiver": "ai-remediation-agent",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "JavaHeapSpaceOOMError",
+        "severity": "critical",
+        "namespace": "default",
+        "deployment": "logger-error"
+      },
+      "annotations": {
+        "summary": "Logger deployment is crashing or restarting",
+        "description": "The deployment default/logger-error is experiencing container restarts due to OutOfMemory Java heap space errors."
+      },
+      "startsAt": "2026-09-06T19:50:00Z"
+    }
+  ]
+}

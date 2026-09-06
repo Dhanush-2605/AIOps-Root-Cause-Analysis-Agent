@@ -2,18 +2,19 @@ from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
 
-# def get_gke_client():
-#     try:
-#         try:
-#             config.load_incluster_config()
-#         except config.ConfigException:
-#             config.load_kube_config()
+def get_gke_client():
+    try:
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            config.load_kube_config()
 
-#         v1 = client.CoreV1Api()
-#         return v1
-#     except Exception as e:
-#         raise RuntimeError(f"Failed to initialize Kubernetes client: {e}")
+        v1 = client.CoreV1Api()
+        return v1
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize Kubernetes client: {e}")
 
+print(get_gke_client())
 # # Tool test function
 # def list_cluster_pods(namespace="default"):
 #     v1 = get_gke_client()
