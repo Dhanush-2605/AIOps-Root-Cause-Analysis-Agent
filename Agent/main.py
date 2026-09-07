@@ -1,4 +1,6 @@
 from fastapi import FastAPI, Request, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+
 from pydantic import BaseModel
 import uvicorn
 import json
@@ -16,6 +18,14 @@ from langgraph.types import Command
 from orchestator import agent_app
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # In production, change this to ["http://localhost:3000"]
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # Helper function to run the agent asynchronously
 
@@ -42,13 +52,14 @@ def run_agent_workflow(initial_state: dict, config: dict):
 
 
 # THE INGESTION ENDPOINT (From Alertmanager)
+    
+triggered_threads = []
 
 @app.post("/alert")
 async def receive_alert(request: Request, background_tasks: BackgroundTasks):
     payload = await request.json()
     alerts = payload.get("alerts", [])
     
-    triggered_threads = []
     
     for alert in alerts:
         # Only process active outages, ignore "resolved" messages for the analyzer
@@ -76,6 +87,61 @@ async def receive_alert(request: Request, background_tasks: BackgroundTasks):
         "message": "Alerts ingested by AI SRE", 
         "active_threads": triggered_threads
     }
+
+@app.get("/incidents")
+async def get_incidents():
+    """React polls this endpoint to populate the left pane and right pane."""
+    frontend_incidents = []
+    
+    for tid in triggered_threads:
+        config = {"configurable": {"thread_id": tid}}
+        try:
+            # Reach directly into LangGraph's checkpointer to get the live state
+            state_snapshot = agent_app.get_state(config)
+            
+            if not state_snapshot or not state_snapshot.values:
+                continue
+                
+            state_vals = state_snapshot.values
+            alert = state_vals.get("alert_payload", {})
+            alert_name = alert.get("labels", {}).get("alertname", "Unknown Alert")
+            target = alert.get("labels", {}).get("deployment", alert.get("labels", {}).get("pod", "Unknown Resource"))
+            
+            status = "executing"
+            proposed_plan_summary = ""
+            
+            # Determine if the graph is paused by inspecting the tasks
+            if state_snapshot.tasks and state_snapshot.tasks[0].interrupts:
+                status = "paused"
+                interrupt_data = state_snapshot.tasks[0].interrupts[0].value
+                proposed_plan_summary = interrupt_data.get("question", "Awaiting your approval...")
+            elif not state_snapshot.next:
+                status = "completed"
+
+            # Create a simple log trace for the frontend UI
+            logs = [
+                {"timestamp": state_vals.get("incident_start_time", "Now"), "node_name": "System", "message": f"Alert Received: {alert_name}"}
+            ]
+            
+            # If AI proposed a plan, show it in the logs
+            if state_vals.get("proposed_plan"):
+                logs.append({"timestamp": "...", "node_name": "Proposer", "message": "Remediation plan generated."})
+                
+            if state_vals.get("execution_logs"):
+                logs.append({"timestamp": "...", "node_name": "Executor", "message": state_vals.get("execution_logs")})
+
+            frontend_incidents.append({
+                "thread_id": tid,
+                "alert_name": alert_name,
+                "target_resource": target,
+                "status": status,
+                "proposed_plan_summary": proposed_plan_summary,
+                "logs": logs
+            })
+        except Exception as e:
+            print(f"Error fetching state for {tid}: {e}")
+            
+    return {"active_threads": frontend_incidents}
 
 
 #  THE HUMAN-IN-THE-LOOP (HITL) APPROVAL ENDPOINT

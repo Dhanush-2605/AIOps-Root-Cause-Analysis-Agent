@@ -23,24 +23,18 @@ tools = [fetch_filtered_pod_logs, get_pod_status]
 llm_with_tools = llm.bind_tools(tools)
 tool_node = ToolNode(tools)
 
-sample_alert_payload = {
-    "alert_name": "KubePodCrashLooping",
-    "severity": "critical",
-    "namespace": "default",
-    "pod_name": "logger-error",
-    "container": "logger-error",
-    "summary": "Pod logger-error is experiencing high error rates",
-    "description": "Pod default/logger-error has generated multiple connection error logs in the last 5 minutes.",
-    "started_at": "2026-08-25T14:30:00Z"
-}
-
-SOP_CONTEXT = """
-
-SYSTEM ARCHITECTURE & SOPs:
-- The system is a Kubernetes cluster running multiple microservices.
--Right now these 3 services are running they are NOT connected to each therlogger-error ,logger-info ,nginx-app
 
 
+# SOP_CONTEXT = """
+
+# SYSTEM ARCHITECTURE & SOPs:
+# - The system is a Kubernetes cluster running multiple microservices.
+# -Right now these 3 services are running they are NOT connected to each therlogger-error ,logger-info ,nginx-app
+
+
+
+# """
+SOP_CONTEXT="""
 """
 INVESTIGATOR_SYS_MSG = SystemMessage(
     content=(
