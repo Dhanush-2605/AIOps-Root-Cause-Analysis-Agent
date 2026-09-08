@@ -245,7 +245,9 @@ def executor_node(state: AgentState):
         "warning": warning_banner,
         "question": f"{warning_banner}Proposed Plan to Execute:\n{summary_text}\n\nHow do you want to proceed? (approve / abort / feedback)"
     })
-
+    
+    print(f"\n[DEBUG] user_response received from FastAPI: {user_response}")
+    
     # 4. Process the complex HITL Decision
     # Handle both dictionary response (from our new FastAPI setup) or simple string
     if isinstance(user_response, dict):

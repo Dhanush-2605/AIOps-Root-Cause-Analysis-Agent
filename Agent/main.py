@@ -88,6 +88,8 @@ async def receive_alert(request: Request, background_tasks: BackgroundTasks):
         "active_threads": triggered_threads
     }
 
+# In backend/main.py
+
 @app.get("/incidents")
 async def get_incidents():
     """React polls this endpoint to populate the left pane and right pane."""
@@ -96,7 +98,6 @@ async def get_incidents():
     for tid in triggered_threads:
         config = {"configurable": {"thread_id": tid}}
         try:
-            # Reach directly into LangGraph's checkpointer to get the live state
             state_snapshot = agent_app.get_state(config)
             
             if not state_snapshot or not state_snapshot.values:
@@ -108,34 +109,40 @@ async def get_incidents():
             target = alert.get("labels", {}).get("deployment", alert.get("labels", {}).get("pod", "Unknown Resource"))
             
             status = "executing"
-            proposed_plan_summary = ""
-            
-            # Determine if the graph is paused by inspecting the tasks
             if state_snapshot.tasks and state_snapshot.tasks[0].interrupts:
                 status = "paused"
-                interrupt_data = state_snapshot.tasks[0].interrupts[0].value
-                proposed_plan_summary = interrupt_data.get("question", "Awaiting your approval...")
             elif not state_snapshot.next:
                 status = "completed"
 
-            # Create a simple log trace for the frontend UI
-            logs = [
-                {"timestamp": state_vals.get("incident_start_time", "Now"), "node_name": "System", "message": f"Alert Received: {alert_name}"}
-            ]
+            # 1. Extract the Context (What the agent found in Prometheus/Logs)
+            context_gathered = state_vals.get("context_gathered", "No context gathered.")
+
+            # 2. Extract the detailed plan and reasoning safely
+            raw_plan = state_vals.get("proposed_plan")
+            detailed_plan = []
             
-            # If AI proposed a plan, show it in the logs
-            if state_vals.get("proposed_plan"):
-                logs.append({"timestamp": "...", "node_name": "Proposer", "message": "Remediation plan generated."})
+            if raw_plan:
+                # Handle both dict and Pydantic object serialization
+                raw_actions = getattr(raw_plan, "proposed_actions", []) if not isinstance(raw_plan, dict) else raw_plan.get("proposed_actions", [])
                 
+                for act in raw_actions:
+                    act_type = getattr(act, "action_type", "") if not isinstance(act, dict) else act.get("action_type", "")
+                    tgt = getattr(act, "target_resource", getattr(act, "target_name", "")) if not isinstance(act, dict) else act.get("target_resource", act.get("target_name", ""))
+                    reason = getattr(act, "reasoning", "No reasoning provided.") if not isinstance(act, dict) else act.get("reasoning", "No reasoning provided.")
+                    
+                    detailed_plan.append({"action": act_type, "target": tgt, "reasoning": reason})
+
+            logs = [{"timestamp": "Sys", "node_name": "Alert", "message": f"Received: {alert_name}"}]
             if state_vals.get("execution_logs"):
-                logs.append({"timestamp": "...", "node_name": "Executor", "message": state_vals.get("execution_logs")})
+                logs.append({"timestamp": "Sys", "node_name": "Executor", "message": state_vals.get("execution_logs")})
 
             frontend_incidents.append({
                 "thread_id": tid,
                 "alert_name": alert_name,
                 "target_resource": target,
                 "status": status,
-                "proposed_plan_summary": proposed_plan_summary,
+                "context_gathered": context_gathered,  
+                "detailed_plan": detailed_plan,        
                 "logs": logs
             })
         except Exception as e:
@@ -153,6 +160,7 @@ class ApprovalRequest(BaseModel):
 @app.post("/approve")
 async def approve_action(approval: ApprovalRequest):
     """Resume a paused agent thread with a decision and optional feedback."""
+    print("CLICKED APPROVE/ABORT BUTTON")
     config = {"configurable": {"thread_id": approval.thread_id}}
     
     user_response_dict = {
@@ -164,6 +172,7 @@ async def approve_action(approval: ApprovalRequest):
     
     try:
         # Resume the paused state
+        print(f"[DEBUG] Invoking agent_app with user_response_dict: {user_response_dict}")
         result = agent_app.invoke(Command(resume=user_response_dict), config=config)
         
         # Check if the graph looped back and hit the HITL interrupt AGAIN
