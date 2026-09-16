@@ -161,7 +161,46 @@ def get_pod_status(namespace: str, pod_name: str) -> str:
     except ApiException as e:
         return f"Kubernetes API Error: {e.reason}"
 
+@tool
+def execute_postgres_query(query: str, namespace: str = "default") -> str:
+    """Executes a diagnostic SQL query against the Postgres database pod.
+    Useful for checking active connections, locks, and long-running queries via pg_stat_activity.
+    """
+    try:
+        
+        v1_api, apps_v1_api = get_gke_client()
 
+        
+        # Find the Postgres pod (Assuming standard labeling or name)
+        pods = v1_api.list_namespaced_pod(namespace=namespace, label_selector="app=postgres")
+        if not pods.items:
+            # Fallback if label selector fails
+            pods = v1_api.list_namespaced_pod(namespace=namespace)
+            pg_pods = [p for p in pods.items if "postgres" in p.metadata.name]
+            if not pg_pods:
+                return "Error: Could not locate a PostgreSQL pod in this namespace."
+            target_pod = pg_pods[0].metadata.name
+        else:
+            target_pod = pods.items[0].metadata.name
+
+        # Execute the query using psql via kubectl exec
+        # We wrap the query in quotes and pass it to the -c flag
+        exec_cmd = [
+            "psql", 
+            "-U", "postgres", # Assumes default user
+            "-c", query
+        ]
+        
+        resp = stream(
+            v1.connect_get_namespaced_pod_exec,
+            name=target_pod,
+            namespace=namespace,
+            command=exec_cmd,
+            stderr=True, stdin=False, stdout=True, tty=False
+        )
+        return f"Query Results:\n{resp}"
+    except Exception as e:
+        return f"Error executing Postgres query: {str(e)}"
 
 # @tool
 # def query_prometheus(promql_query: str) -> str:

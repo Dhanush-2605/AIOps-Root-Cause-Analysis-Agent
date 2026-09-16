@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
-const { createClient } = require('redis');
 const fs = require('fs');
 
 const app = express();
@@ -11,8 +10,6 @@ app.use(express.json());
 // ==========================================
 // 1. CREDENTIALS & CONNECTIONS
 // ==========================================
-
-// Safely read the database password from the mounted GCP Secret volume
 let dbPassword = process.env.DB_PASSWORD || "supersecretpassword";
 try {
     if (fs.existsSync('/mnt/secrets/db-password.txt')) {
@@ -22,128 +19,226 @@ try {
     console.warn("Secret file not found, falling back to env var.");
 }
 
-// Connect to the Pgpool Proxy (NOT directly to the DB pods)
 const pgPool = new Pool({
-    host: process.env.DB_HOST || 'pgpool-service', // Maps to ConfigMap
+    host: process.env.DB_HOST || 'pgpool-service',
     user: process.env.DB_USER || 'postgres',
     password: dbPassword,
     database: process.env.DB_NAME || 'mytierdb',
     port: 5432,
-    max: 20 // Connection pool size
+    max: 20 
 });
 
-// Connect to the Redis Shock Absorber
-const redisClient = createClient({
-    url: `redis://${process.env.REDIS_HOST || 'redis-service'}:6379`
+// ==========================================
+// 2. SRE CONTROL PLANE (For the AI Agent)
+// ==========================================
+const activeRequests = new Map();
+const circuitBreakers = { external_partner: { tripped: false } };
+
+// Middleware to track in-flight requests so the AI Agent can abort them
+app.use((req, res, next) => {
+    if (req.path.startsWith('/admin') || req.path.startsWith('/api/employees')) return next();
+
+    const requestId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    const controller = new AbortController();
+    req.abortSignal = controller.signal;
+
+    activeRequests.set(requestId, {
+        id: requestId,
+        startTime: Date.now(),
+        controller,
+        res
+    });
+
+    res.on('finish', () => activeRequests.delete(requestId));
+    res.on('close', () => activeRequests.delete(requestId));
+    next();
 });
 
-redisClient.on('error', (err) => console.error('Redis Client Error', err));
+// Admin Routes (Called by executor_node via kubectl exec)
+app.post('/admin/requests/abort', (req, res) => {
+    const thresholdSec = parseInt(req.query.threshold || '30', 10);
+    const now = Date.now();
+    let abortedCount = 0;
 
-// ==========================================
-// 2. THE API ROUTES (FAST INGESTION)
-// ==========================================
-
-// A special route to simulate a massive traffic spike
-app.post('/api/load-test', async (req, res) => {
-    const { count = 1000 } = req.body; // Default to 1000 records
-    const departments = ['Engineering', 'HR', 'Sales', 'Marketing'];
-
-    try {
-        // Generate dummy records and slam them into Redis as fast as possible
-        for (let i = 0; i < count; i++) {
-            const employee = {
-                name: `LoadTest_Emp_${Math.floor(Math.random() * 100000)}`,
-                department: departments[Math.floor(Math.random() * departments.length)],
-                salary: Math.floor(Math.random() * 100000) + 50000,
-                join_date: new Date().toISOString().split('T')[0]
-            };
-            
-            // LPUSH adds the record to the left side of the queue
-            await redisClient.lPush('employee_queue', JSON.stringify(employee));
+    for (const [id, record] of activeRequests.entries()) {
+        if ((now - record.startTime) / 1000 > thresholdSec) {
+            record.controller.abort();
+            if (!record.res.headersSent) {
+                record.res.status(504).json({ error: 'Request aborted by SRE AIOps agent' });
+            }
+            activeRequests.delete(id);
+            abortedCount++;
         }
+    }
+    res.json({ status: 'success', abortedRequests: abortedCount });
+});
 
-        res.status(202).json({ 
-            message: `Successfully buffered ${count} records into Redis.`,
-            status: "Processing in background" 
-        });
+app.post('/admin/circuit-breaker/trip', (req, res) => {
+    circuitBreakers.external_partner.tripped = true;
+    res.json({ status: 'tripped', state: circuitBreakers });
+});
+
+// ==========================================
+// 3. SEED & VERIFY DATA (Frontend Helpers)
+// ==========================================
+
+// Seed dummy data directly into Postgres
+app.post('/api/seed', async (req, res) => {
+    const { count = 50 } = req.body;
+    const departments = ['Engineering', 'HR', 'Sales', 'Marketing'];
+    
+    try {
+        // Ensure table exists
+        await pgPool.query(`
+            CREATE TABLE IF NOT EXISTS employee_data (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100),
+                department VARCHAR(50),
+                salary INT,
+                join_date DATE
+            )
+        `);
+
+        // Insert records
+        for (let i = 0; i < count; i++) {
+            const name = `Emp_${Math.floor(Math.random() * 100000)}`;
+            const dept = departments[Math.floor(Math.random() * departments.length)];
+            const salary = Math.floor(Math.random() * 100000) + 50000;
+            const date = new Date().toISOString().split('T')[0];
+            
+            await pgPool.query(
+                'INSERT INTO employee_data (name, department, salary, join_date) VALUES ($1, $2, $3, $4)',
+                [name, dept, salary, date]
+            );
+        }
+        res.status(201).json({ message: `Successfully injected ${count} records into Postgres.` });
     } catch (err) {
         console.error(err);
-        res.status(500).json({ error: "Ingestion failed" });
+        res.status(500).json({ error: "Database ingestion failed" });
     }
 });
 
-// Metrics route for the Frontend (and future AI Agent) to monitor backpressure
-app.get('/api/metrics', async (req, res) => {
+// Fetch top 5 rows for Frontend confirmation
+app.get('/api/employees', async (req, res) => {
     try {
-        const queueDepth = await redisClient.lLen('employee_queue');
-        res.json({ queueDepth });
+        const result = await pgPool.query('SELECT * FROM employee_data ORDER BY id DESC LIMIT 5');
+        res.json({ data: result.rows });
     } catch (err) {
-        res.status(500).json({ error: "Failed to read metrics" });
+        console.error(err);
+        res.status(500).json({ error: "Failed to fetch data" });
     }
 });
 
 // ==========================================
-// 3. THE BACKGROUND WORKER (SLOW DRAIN)
+// 4. PRODUCTION BUGS (Chaos Scenarios)
 // ==========================================
 
-async function processQueue() {
+// SCENARIO A: Network Delay (Hanging 3rd Party API)
+app.post('/api/payments/process', async (req, res) => {
+    console.log(`[INFO] Initiating payment processing...`);
+    
     try {
-        // Pop up to 50 items off the right side of the queue
-        const batchSize = 50;
-        const items = [];
+        if (circuitBreakers.external_partner.tripped) {
+            console.warn(`[CIRCUIT BREAKER] Rejecting payment request, upstream API is marked as DOWN.`);
+            return res.status(503).json({ error: "Service Unavailable" });
+        }
         
-        for (let i = 0; i < batchSize; i++) {
-            const item = await redisClient.rPop('employee_queue');
-            if (!item) break; // Queue is empty
-            items.push(JSON.parse(item));
-        }
+        // This timer writes to the logs so the Agent can see the request is stuck!
+        const logTimer = setTimeout(() => {
+            console.error(`[FATAL WARNING] External payment API is hanging! Request pending for > 30s. Thread blocked.`);
+        }, 30000);
 
-        if (items.length > 0) {
-            console.log(`Worker pulling ${items.length} records from Redis... writing to Postgres via Pgpool.`);
+        await new Promise((resolve, reject) => {
+            const requestTimer = setTimeout(() => resolve(), 60000); 
             
-            // We use a transaction to safely write the batch
-            const client = await pgPool.connect();
-            try {
-                await client.query('BEGIN');
-                for (let emp of items) {
-                    await client.query(
-                        'INSERT INTO employee_data (name, department, salary, join_date) VALUES ($1, $2, $3, $4)',
-                        [emp.name, emp.department, emp.salary, emp.join_date]
-                    );
-                }
-                await client.query('COMMIT');
-            } catch (err) {
-                await client.query('ROLLBACK');
-                console.error("Database write failed, data lost:", err);
-                // In a production system, we would put the items back into Redis here!
-            } finally {
-                client.release();
-            }
-        }
-    } catch (err) {
-        console.error("Worker encountered an error:", err);
-    }
+            req.abortSignal.addEventListener('abort', () => {
+                clearTimeout(requestTimer);
+                clearTimeout(logTimer);
+                reject(new Error('Aborted by SRE Agent'));
+            });
+        });
 
-    // Deliberately delay the loop by 1 second. 
-    // This creates an artificial bottleneck so we can actually watch the queue fill up during a load test!
-    setTimeout(processQueue, 1000); 
-}
+        res.json({ status: "success" });
+    } catch (err) {
+        if (err.message.includes('Aborted')) {
+            console.log(`[RECOVERY] Hanging request successfully aborted. Event loop freed.`);
+            return res.status(504).json({ error: "Gateway Timeout" });
+        }
+        res.status(500).json({ error: "Internal Server Error" });
+    }
+});
+
+
+
+// SCENARIO B: Database Connection Leak (Early Return Bug)
+app.post('/api/orders/checkout', async (req, res) => {
+    let client;
+    try {
+        // Log the current pool stats so the AI can see if it's maxed out
+        console.log(`[DB POOL STATS] Total: ${pgPool.totalCount}, Idle: ${pgPool.idleCount}, Waiting: ${pgPool.waitingCount}`);
+        
+        // If the pool is exhausted, it throws an error here
+        client = await pgPool.connect(); 
+        
+        await client.query('BEGIN');
+        await client.query('UPDATE employee_data SET salary = salary + 1 WHERE id = 1');
+        
+        const isValidUser = false; 
+        
+        if (!isValidUser) {
+           console.warn(`[WARN] Checkout failed validation. Returning 400.`);
+           // THE BUG: We return 400 but NEVER release the client!
+           return res.status(400).json({ error: "Invalid user account status" });
+        }
+
+        await client.query('COMMIT');
+        client.release();
+        res.json({ status: "success" });
+        
+    } catch (err) {
+        // THIS is the log the AI will see when the pool is fully leaked
+        console.error(`[DB ERROR] Failed to acquire connection from pool: ${err.message}`);
+        
+        if (client) {
+            await client.query('ROLLBACK');
+            client.release();
+        }
+        res.status(500).json({ error: "Database Connection Error" });
+    }
+});
+
+// SCENARIO C: Long-Running Database Lock (Expensive Query)
+app.post('/api/reports/generate', async (req, res) => {
+    console.log(`[INFO] Generating massive financial report...`);
+    let client;
+    try {
+        client = await pgPool.connect();
+        
+        // Log that we are starting a potentially dangerous operation
+        console.log(`[DB WARNING] Executing expensive aggregation query (Expected duration: ~200s).`);
+        
+        await client.query('BEGIN');
+        
+        // Simulating a terrible query that locks tables and takes 200 seconds to run.
+        await client.query('SELECT pg_sleep(200)'); 
+        
+        await client.query('COMMIT');
+        console.log(`[INFO] Financial report generated successfully.`);
+        res.json({ status: "success", reportUrl: "/reports/download/123" });
+        
+    } catch (err) {
+        // If the query times out or fails
+        console.error(`[DB ERROR] Report generation failed: ${err.message}`);
+        res.status(500).json({ error: "Report Generation Failed" });
+    } finally {
+        if (client) client.release();
+    }
+});
 
 // ==========================================
-// 4. START THE SERVER
+// 5. START SERVER
 // ==========================================
 const PORT = process.env.PORT || 8080;
-
-async function start() {
-    await redisClient.connect();
-    console.log("Connected to Redis Shock Absorber");
-    
-    app.listen(PORT, () => {
-        console.log(`Backend API listening on port ${PORT}`);
-        
-        // Start the background worker loop
-        processQueue();
-    });
-}
-
-start();
+app.listen(PORT, () => {
+    console.log(`Backend API listening on port ${PORT}`);
+});

@@ -21,7 +21,6 @@ export default function AIOpsDashboard() {
   useEffect(() => {
     const fetchIncidents = async () => {
       try {
-        // Tip: If localhost fails, try 'http://127.0.0.1:8000/incidents'
         const response = await fetch("http://localhost:8080/incidents");
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
