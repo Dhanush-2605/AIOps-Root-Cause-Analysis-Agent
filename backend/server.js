@@ -19,6 +19,20 @@ try {
     console.warn("Secret file not found, falling back to env var.");
 }
 
+const logger = {
+    info: (msg, meta = {}) => {
+        console.log(JSON.stringify({ level: 'info', timestamp: new Date().toISOString(), message: msg, ...meta }));
+    },
+    warn: (msg, meta = {}) => {
+        console.log(JSON.stringify({ level: 'warn', timestamp: new Date().toISOString(), message: msg, ...meta }));
+    },
+    error: (msg, meta = {}) => {
+        console.error(JSON.stringify({ level: 'error', timestamp: new Date().toISOString(), message: msg, ...meta }));
+    }
+};
+
+
+
 const pgPool = new Pool({
     host: process.env.DB_HOST || 'pgpool-service',
     user: process.env.DB_USER || 'postgres',
@@ -135,110 +149,107 @@ app.get('/api/employees', async (req, res) => {
 
 // SCENARIO A: Network Delay (Hanging 3rd Party API)
 app.post('/api/payments/process', async (req, res) => {
-    console.log(`[INFO] Initiating payment processing...`);
+    const txId = `tx_${Math.floor(Math.random() * 10000)}`;
+    logger.info("Initiating payment transaction", { endpoint: "/api/payments/process", transaction_id: txId });
     
     try {
-        if (circuitBreakers.external_partner.tripped) {
-            console.warn(`[CIRCUIT BREAKER] Rejecting payment request, upstream API is marked as DOWN.`);
-            return res.status(503).json({ error: "Service Unavailable" });
+        if (circuitBreakers.stripe_api.tripped) {
+            logger.warn("Payment rejected due to tripped circuit breaker", { endpoint: "/api/payments/process", upstream: "stripe_api" });
+            return res.status(503).json({ error: "Payment gateway unavailable." });
         }
         
-        // This timer writes to the logs so the Agent can see the request is stuck!
-        const logTimer = setTimeout(() => {
-            console.error(`[FATAL WARNING] External payment API is hanging! Request pending for > 30s. Thread blocked.`);
-        }, 30000);
-
         await new Promise((resolve, reject) => {
-            const requestTimer = setTimeout(() => resolve(), 60000); 
-            
+            const timer = setTimeout(() => resolve(), 60000); 
             req.abortSignal.addEventListener('abort', () => {
-                clearTimeout(requestTimer);
-                clearTimeout(logTimer);
-                reject(new Error('Aborted by SRE Agent'));
+                clearTimeout(timer);
+                reject(new Error('AbortError'));
             });
         });
 
-        res.json({ status: "success" });
+        logger.info("Transaction completed successfully", { endpoint: "/api/payments/process", transaction_id: txId, status: "success" });
+        res.json({ status: "success", transaction_id: txId });
     } catch (err) {
-        if (err.message.includes('Aborted')) {
-            console.log(`[RECOVERY] Hanging request successfully aborted. Event loop freed.`);
+        if (err.message === 'AbortError') {
+            logger.error("Transaction failed: Client disconnected or request aborted.", { 
+                endpoint: "/api/payments/process", 
+                transaction_id: txId, 
+                error_type: "AbortError" 
+            });
             return res.status(504).json({ error: "Gateway Timeout" });
         }
+        
+        logger.error("Internal Server Error during payment processing", { endpoint: "/api/payments/process", error_message: err.message });
         res.status(500).json({ error: "Internal Server Error" });
     }
 });
 
 
-
 // SCENARIO B: Database Connection Leak (Early Return Bug)
 app.post('/api/orders/checkout', async (req, res) => {
+    const { userId } = req.body;
+    logger.info("Processing checkout cart", { endpoint: "/api/orders/checkout", user_id: userId });
+    
     let client;
     try {
-        // Log the current pool stats so the AI can see if it's maxed out
-        console.log(`[DB POOL STATS] Total: ${pgPool.totalCount}, Idle: ${pgPool.idleCount}, Waiting: ${pgPool.waitingCount}`);
-        
-        // If the pool is exhausted, it throws an error here
-        client = await pgPool.connect(); 
-        
+        client = await pgPool.connect();
         await client.query('BEGIN');
-        await client.query('UPDATE employee_data SET salary = salary + 1 WHERE id = 1');
         
-        const isValidUser = false; 
+        const isValid = false; // Business logic check fails
         
-        if (!isValidUser) {
-           console.warn(`[WARN] Checkout failed validation. Returning 400.`);
-           // THE BUG: We return 400 but NEVER release the client!
-           return res.status(400).json({ error: "Invalid user account status" });
+        if (!isValid) {
+           logger.info("Checkout rejected: User failed fraud verification", { 
+               endpoint: "/api/orders/checkout", 
+               user_id: userId, 
+               reason: "fraud_verification_failed" 
+           });
+           
+           // BUG: Missing ROLLBACK and release. The connection is now leaked.
+           return res.status(400).json({ error: "Account verification failed" });
         }
 
         await client.query('COMMIT');
         client.release();
-        res.json({ status: "success" });
         
+        logger.info("Checkout completed successfully", { endpoint: "/api/orders/checkout", user_id: userId, status: "success" });
+        res.json({ status: "success" });
     } catch (err) {
-        // THIS is the log the AI will see when the pool is fully leaked
-        console.error(`[DB ERROR] Failed to acquire connection from pool: ${err.message}`);
+        logger.error("Database or processing error during checkout", { 
+            endpoint: "/api/orders/checkout", 
+            error_message: err.message,
+            stack: err.stack
+        });
         
         if (client) {
-            await client.query('ROLLBACK');
+            await client.query('ROLLBACK').catch(() => {});
             client.release();
         }
-        res.status(500).json({ error: "Database Connection Error" });
+        res.status(500).json({ error: "Checkout failed" });
     }
 });
 
-// SCENARIO C: Long-Running Database Lock (Expensive Query)
+// ==========================================
+// SCENARIO 3: The Badly Optimized Query
+// ==========================================
 app.post('/api/reports/generate', async (req, res) => {
-    console.log(`[INFO] Generating massive financial report...`);
+    const { reportType } = req.body;
+    logger.info("Generating report", { endpoint: "/api/reports/generate", report_type: reportType });
+    
     let client;
     try {
         client = await pgPool.connect();
+        await client.query('SELECT pg_sleep(90)'); 
+        client.release();
         
-        // Log that we are starting a potentially dangerous operation
-        console.log(`[DB WARNING] Executing expensive aggregation query (Expected duration: ~200s).`);
-        
-        await client.query('BEGIN');
-        
-        // Simulating a terrible query that locks tables and takes 200 seconds to run.
-        await client.query('SELECT pg_sleep(200)'); 
-        
-        await client.query('COMMIT');
-        console.log(`[INFO] Financial report generated successfully.`);
-        res.json({ status: "success", reportUrl: "/reports/download/123" });
-        
+        logger.info("Report generated successfully", { endpoint: "/api/reports/generate", report_type: reportType, status: "success" });
+        res.json({ status: "success" });
     } catch (err) {
-        // If the query times out or fails
-        console.error(`[DB ERROR] Report generation failed: ${err.message}`);
-        res.status(500).json({ error: "Report Generation Failed" });
-    } finally {
+        logger.error("Report generation failed", { endpoint: "/api/reports/generate", report_type: reportType, error_message: err.message });
         if (client) client.release();
+        res.status(500).json({ error: "Report generation failed" });
     }
 });
 
 // ==========================================
 // 5. START SERVER
 // ==========================================
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-    console.log(`Backend API listening on port ${PORT}`);
-});
+app.listen(8080, () => logger.info("Backend API started", { port: 8080, environment: "production" }));
