@@ -1,4 +1,4 @@
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 
 from agent_state import AgentState, RemediationPlan, CriticReview,K8sAction
 from agent_tools import fetch_filtered_pod_logs, get_pod_status
@@ -36,25 +36,41 @@ tool_node = ToolNode(tools)
 # """
 SOP_CONTEXT="""
 """
-INVESTIGATOR_SYS_MSG = SystemMessage(
-    content=(
-        f"You are an Elite Kubernetes SRE Investigator.\n{SOP_CONTEXT}\n"
-        "Your ONLY goal is to gather logs and metrics using tools to identify the root cause.\n"
-        "RULES:\n"
-        "1. Do NOT propose fixes or kubectl remediation commands.\n"
-        "2. Focus ONLY on the pod mentioned in the alert.\n"
-        "3. Once you understand the issue, stop calling tools."
-    )
-)
 
 
-# apps_v1_api=get_gke_client()
-# print(apps_v1_api)
+
+MAX_INVESTIGATION_ITERATIONS = 6
+
+INVESTIGATOR_SYS_MSG = SystemMessage(content="""
+You are an autonomous SRE Diagnostic Agent. Your ONLY job is investigation and 
+root-cause identification — you never execute remediation, even if a tool that 
+could do so is available to you.
+
+## Hard rules
+1. Never conclude "traffic spike" or "needs more resources" without first checking 
+   for resource hoarding: long-running/blocking queries, idle-in-transaction 
+   connections, replication lag, or connection leaks. Resource saturation is a 
+   symptom, not a cause, until proven otherwise.
+2. Every claim you make must be traceable to a specific tool result you gathered. 
+   Do not state a cause you cannot cite evidence for.
+3. If a tool call fails or times out, note it and continue with remaining tools — 
+   do not assume a value for a failed call.
+4. When you have enough evidence, stop calling tools and produce your final findings 
+   as plain text (no more tool_calls) in this shape:
+
+Error: <alert name + symptom>
+Root Cause: <technical explanation, each claim tied to a specific tool result>
+Confidence: <high | medium | low | inconclusive>
+Evidence Gaps: <what's still unknown, if confidence isn't high>
+""")
+
+
 def investigator_node(state: AgentState):
-    """Analyzes the alert and uses tools to gather logs/metrics."""
     messages = list(state.get("messages", []))
-    
-    # 1. First run: Initialize with the alert payload
+    context_gathered = state.get("context_gathered", "")
+    iterations = state.get("investigation_iterations", 0)
+
+    # 1. First run
     if not messages:
         alert_data = state.get("alert_payload", {})
         alert_text = (
@@ -64,69 +80,135 @@ def investigator_node(state: AgentState):
         )
         human_msg = HumanMessage(content=alert_text)
         response = llm_with_tools.invoke([INVESTIGATOR_SYS_MSG, human_msg])
-        
-        # Return initial message, response, and seed the context_gathered
         return {
             "messages": [human_msg, response],
-            "context_gathered": f"Started investigation for alert: {alert_data.get('alert_name')}"
+            "context_gathered": f"Started investigation for alert: {alert_data.get('alert_name', 'unknown')}",
+            "investigation_iterations": 1,
         }
-    
-    # 2. Subsequent runs: Invoke LLM with existing history
+
+    # 2. Pull any new ToolMessages since the last AI turn and fold them into context_gathered
+    new_findings = []
+    for m in reversed(messages):
+        if isinstance(m, ToolMessage):
+            new_findings.append(f"- [{m.name}]: {str(m.content)[:800]}")
+        elif isinstance(m, AIMessage):
+            break
+    new_findings.reverse()
+    if new_findings:
+        context_gathered = context_gathered + "\n" + "\n".join(new_findings)
+
+    iterations += 1
+
+    # 3. Hard cap — force a conclusion instead of trusting the prompt alone
+    if iterations >= MAX_INVESTIGATION_ITERATIONS:
+        force_msg = HumanMessage(content=(
+            f"You have reached the maximum of {MAX_INVESTIGATION_ITERATIONS} tool calls. "
+            "Do not call any more tools. Output your final findings now based on the "
+            "evidence gathered so far — use confidence: low or inconclusive if the "
+            "evidence isn't sufficient."
+        ))
+        # note: llm without tools bound, so it physically cannot call another tool
+        response = llm.invoke([INVESTIGATOR_SYS_MSG] + messages + [force_msg])
+        if response.content:
+            context_gathered += f"\n[Final Summary - forced by iteration cap]: {response.content}"
+        return {
+            "messages": [force_msg, response],
+            "context_gathered": context_gathered,
+            "investigation_iterations": iterations,
+        }
+
+    # 4. Normal loop continuation
     response = llm_with_tools.invoke([INVESTIGATOR_SYS_MSG] + messages)
-    
-    # Optional: If the model generated text explaining a finding, append it to context_gathered
-    new_context = ""
-    if response.content:
-        new_context = f"\n[Investigation Finding]: {response.content}"
+
+    if response.content and not response.tool_calls:
+        context_gathered += f"\n[Investigation Finding]: {response.content}"
 
     return {
         "messages": [response],
-        "context_gathered": new_context
+        "context_gathered": context_gathered,
+        "investigation_iterations": iterations,
     }
+    
+    
+    
+    
+
 
 def proposer_node(state: AgentState):
-    """Generates or adjusts a remediation plan based on context and critic/human feedback."""
     context = state.get("context_gathered", "")
     alert = state.get("alert_payload", {})
     feedback = state.get("critic_feedback", "")
     is_safe = state.get("is_safe", True)
-    
+    verification_attempts = state.get("verification_attempts", 0)
+    execution_logs = state.get("execution_logs", "")
+
     structured_llm = llm.with_structured_output(RemediationPlan)
-    
-    sys_msg = SystemMessage(
-        content=(
-            "You are an SRE Remediation Expert.\n"
-            "Propose a structured JSON RemediationPlan containing valid K8sAction objects.\n"
-            "Valid action_types: 'delete_pod', 'scale_deployment', 'restart_deployment', "
-            "'increase_memory_limit', 'increase_cpu_limit', 'kill_idle_db_connections', "
-            "'kill_container_process', 'abort_hanging_requests', 'trip_circuit_breaker', 'clear_app_cache'.\n"
-            "CRITICAL ANTI-HALLUCINATION RULE: If the logs do not reveal a clear root cause, DO NOT guess. Return an empty array.\n"
-            "ABSOLUTE OVERRIDE RULE: If the feedback contains 'HUMAN OPERATOR OVERRIDE', you MUST discard your previous "
-            "analysis and strictly format the human's exact requested action into the appropriate K8sAction object."
-        )
-    )
-    
-    # Handle both Critic rejections AND Human-In-The-Loop feedback
+
+    sys_msg = SystemMessage(content="""
+You are an SRE Remediation Expert. Propose a structured RemediationPlan.
+
+## Action risk tiers — prefer the lowest tier that addresses the root cause
+- Low risk, prefer first: kill_idle_db_connections, abort_hanging_requests, 
+  clear_app_cache, trip_circuit_breaker
+- Medium risk: restart_deployment, scale_deployment
+- High risk, last resort: delete_pod, increase_memory_limit, increase_cpu_limit
+
+Do not reach for a medium/high-risk action if a low-risk one addresses the same 
+root cause. Resource-limit increases in particular must NEVER be proposed if the 
+investigation found a blocking process, leaked connection, or hoarding query — 
+that gets killed, not resourced around.
+
+## Rules
+- CRITICAL ANTI-HALLUCINATION RULE: if the investigation context does not reveal a 
+  clear root cause, return an empty proposed_actions array with confidence: 
+  inconclusive. Do not guess.
+- Every action needs a justification citing specific evidence from the investigation 
+  context, and an honest blast_radius assessment.
+- Set requires_human_review: true for any action with blast_radius 'medium' or 'high', 
+  or when confidence is not 'high'.
+- ABSOLUTE OVERRIDE RULE: if the feedback contains 'HUMAN OPERATOR OVERRIDE', discard 
+  your own analysis and format the human's exact requested action into a K8sAction — 
+  but it must still be one of the valid action_types. Do not invent a new action_type 
+  even under override.
+- If this is a replan after a failed verification, do not propose the same action_type 
+  on the same target again — the evidence shows it didn't work; propose something 
+  different or return empty with confidence: low if nothing else fits.
+""")
+
     feedback_prompt = ""
     if not is_safe and feedback:
         feedback_prompt = f"\n\n⚠️ PREVIOUS PLAN REJECTED:\n{feedback}\nGenerate a NEW plan strictly addressing this feedback."
 
+    retry_prompt = ""
+    if verification_attempts > 0:
+        retry_prompt = (
+            f"\n\n⚠️ PRIOR ATTEMPT {verification_attempts} DID NOT RESOLVE THE ALERT.\n"
+            f"Execution logs from that attempt:\n{execution_logs}\n"
+            "Do not repeat the same action — propose an alternative or escalate."
+        )
+
     prompt = (
         f"Alert:\n{json.dumps(alert, indent=2)}\n\n"
         f"Investigation Context:\n{context}"
-        f"{feedback_prompt}\n\n"
+        f"{feedback_prompt}{retry_prompt}\n\n"
         "Propose a safe remediation plan."
     )
-    
+
     plan: RemediationPlan = structured_llm.invoke([sys_msg, HumanMessage(content=prompt)])
-    
+
     if not plan.proposed_actions:
-        print("   └─ Proposed Plan: [EMPTY - No safe action identified]")
+        print(f"   └─ Proposed Plan: [EMPTY - {plan.confidence}]")
     else:
-        action_list = [f"{a.action_type}({getattr(a, 'target_resource', getattr(a, 'target_name', 'Unknown'))})" for a in plan.proposed_actions]
+        action_list = [
+            f"{a.action_type}({a.target_resource or a.target_name or 'unknown'}, risk={a.blast_radius})"
+            for a in plan.proposed_actions
+        ]
         print(f"   └─ Proposed Plan: {action_list}")
-        
+
     return {"proposed_plan": plan}
+
+
+
 
 CRITIC_SYS_MSG = SystemMessage(
     content="You are a strict Kubernetes Production Gatekeeper and Safety Critic. Review proposed commands against cluster SOPs."
@@ -282,28 +364,8 @@ def executor_node(state: AgentState):
         namespace = get_action_attr(action, "namespace", "default")
         val = get_action_attr(action, "value")
 
-        # action_summary = f"{action_type} on {target_name} (namespace: {namespace})"
-        # if val:
-        #     action_summary += f" with value: {val}"
 
-        # warning_banner = ""
-        # if not is_safe:
-        #     warning_banner = f"\n⚠️ CRITIC SAFETY WARNING: {critic_feedback}\n"
-
-        # # Trigger Human-in-the-Loop Pause
-        # user_response = interrupt({
-        #     "is_safe": is_safe,
-        #     "warning": warning_banner,
-        #     "question": f"{warning_banner}Action to execute: {action_summary}\nApprove action? (y/n): "
-        # })
-
-        # # Process User Input after resume
-        # if str(user_response).strip().lower() not in ["y", "yes"]:
-        #     output_logs += f"\n[ABORTED BY USER] Execution canceled for: {action_summary}"
-        #     print(f"\n❌ Execution aborted by user for target: {target_name}")
-        #     break
-
-        # print(f"\n🚀 [EXECUTING K8S SDK] Calling API for: {action_summary}...")
+      
 
         try:
             # ---------------------------------------------------------
@@ -360,39 +422,29 @@ def executor_node(state: AgentState):
             # ---------------------------------------------------------
             # 2. IN-PROCESS APPLICATION OPERATIONS (Via k8s stream exec)
             # ---------------------------------------------------------
-            elif action_type == "kill_idle_db_connections":
-                # Target must be the Postgres pod name
-                exec_cmd = ["psql", "-U", "postgres", "-c", "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'idle';"]
-                resp = stream(v1_api.connect_get_namespaced_pod_exec, name=target_name, namespace=namespace, command=exec_cmd, stderr=True, stdin=False, stdout=True, tty=False)
-                output_logs += f"\n[SUCCESS] Dropped idle DB connections on '{target_name}': {resp}"
-                print(f"   └─ ✅ DB Connections dropped.")
+            elif action_type == "kill_blocking_transaction":
+                pid = int(val)  # fail loud if the LLM produced a non-numeric value, rather than exec'ing garbage SQL
+                exec_cmd = ["psql", "-U", "postgres", "-c", f"SELECT pg_terminate_backend({pid});"]
+                resp = stream(
+                    v1_api.connect_get_namespaced_pod_exec,
+                    name=target_name, namespace=namespace, command=exec_cmd,
+                    stderr=True, stdin=False, stdout=True, tty=False
+                )
+                output_logs += f"\n[SUCCESS] Terminated blocking backend PID {pid} on '{target_name}': {resp}"
+                print(f"   └─ ✅ Blocking transaction (PID {pid}) terminated.")
 
-            elif action_type == "kill_container_process":
-                pid = val or "1"
-                exec_cmd = ["/bin/sh", "-c", f"kill -15 {pid} || kill -9 {pid}"]
-                resp = stream(v1_api.connect_get_namespaced_pod_exec, name=target_name, namespace=namespace, command=exec_cmd, stderr=True, stdin=False, stdout=True, tty=False)
-                output_logs += f"\n[SUCCESS] Killed PID {pid} in '{target_name}': {resp}"
-                print(f"   └─ ✅ Process terminated.")
 
             elif action_type == "abort_hanging_requests":
                 threshold = val or "30"
                 exec_cmd = ["curl", "-s", "-X", "POST", f"http://127.0.0.1:8080/admin/requests/abort?threshold={threshold}"]
-                resp = stream(v1_api.connect_get_namespaced_pod_exec, name=target_name, namespace=namespace, command=exec_cmd, stderr=True, stdin=False, stdout=True, tty=False)
+                resp = stream(
+                    v1_api.connect_get_namespaced_pod_exec,
+                    name=target_name, namespace=namespace, command=exec_cmd,
+                    stderr=True, stdin=False, stdout=True, tty=False
+                )
                 output_logs += f"\n[SUCCESS] Aborted requests exceeding {threshold}s on '{target_name}': {resp}"
                 print(f"   └─ ✅ Hanging requests aborted.")
 
-            elif action_type == "trip_circuit_breaker":
-                service = val or "all"
-                exec_cmd = ["curl", "-s", "-X", "POST", f"http://127.0.0.1:8080/admin/circuit-breaker/trip?service={service}"]
-                resp = stream(v1_api.connect_get_namespaced_pod_exec, name=target_name, namespace=namespace, command=exec_cmd, stderr=True, stdin=False, stdout=True, tty=False)
-                output_logs += f"\n[SUCCESS] Tripped circuit breaker for '{service}' on '{target_name}': {resp}"
-                print(f"   └─ ✅ Circuit breaker tripped.")
-
-            elif action_type == "clear_app_cache":
-                exec_cmd = ["curl", "-s", "-X", "POST", "http://127.0.0.1:8080/admin/cache/clear"]
-                resp = stream(v1_api.connect_get_namespaced_pod_exec, name=target_name, namespace=namespace, command=exec_cmd, stderr=True, stdin=False, stdout=True, tty=False)
-                output_logs += f"\n[SUCCESS] Cleared application cache on '{target_name}': {resp}"
-                print(f"   └─ ✅ Cache cleared.")
 
             else:
                 output_logs += f"\n[WARNING] Action type '{action_type}' is not currently implemented in SDK router."

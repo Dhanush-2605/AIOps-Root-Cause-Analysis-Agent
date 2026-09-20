@@ -11,11 +11,9 @@ class K8sAction(BaseModel):
         "restart_deployment",
         "increase_memory_limit",
         "increase_cpu_limit",
-        "kill_idle_db_connections",
-        "kill_container_process",       
-        "abort_hanging_requests",       
-        "trip_circuit_breaker",         
-        "clear_app_cache"               
+        "kill_blocking_transaction",
+        "abort_hanging_requests"
+             
     ] = Field(
         ...,
         description="The precise remediation action to execute. Must match exactly one of the permitted options."
@@ -36,9 +34,9 @@ class K8sAction(BaseModel):
         description=(
             "Action parameters: "
             "- For scaling/limits: e.g., '3' or '512Mi'. "
-            "- For 'kill_container_process': PID (e.g., '142'). "
+            "- For 'kill_blocking_transaction': the blocking PID, as found by "
+            "- get_blocking_transactions during investigation (e.g. '4521'). "            
             "- For 'abort_hanging_requests': max duration in seconds (e.g., '30'). "
-            "- For 'trip_circuit_breaker': service name (e.g., 'stripe_api'). "
             "- Leave null if the action requires no parameters."
         )
     )

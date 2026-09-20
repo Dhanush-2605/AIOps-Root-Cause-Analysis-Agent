@@ -184,70 +184,89 @@ app.post('/api/payments/process', async (req, res) => {
 });
 
 
-// SCENARIO B: Database Connection Leak (Early Return Bug)
-app.post('/api/orders/checkout', async (req, res) => {
-    const { userId } = req.body;
-    logger.info("Processing checkout cart", { endpoint: "/api/orders/checkout", user_id: userId });
-    
+// SCENARIO B: Blocking Transaction
+app.post('/api/orders/lock-row', async (req, res) => {
+    const { orderId = 1 } = req.body;
     let client;
     try {
         client = await pgPool.connect();
         await client.query('BEGIN');
-        
-        const isValid = false; // Business logic check fails
-        
-        if (!isValid) {
-           logger.info("Checkout rejected: User failed fraud verification", { 
-               endpoint: "/api/orders/checkout", 
-               user_id: userId, 
-               reason: "fraud_verification_failed" 
-           });
-           
-           // BUG: Missing ROLLBACK and release. The connection is now leaked.
-           return res.status(400).json({ error: "Account verification failed" });
-        }
+        await client.query('SELECT * FROM employee_data WHERE id = $1 FOR UPDATE', [orderId]);
 
+        logger.info("Order lock acquired", { endpoint: "/api/orders/lock-row", order_id: orderId });
+        res.json({ status: "locked", order_id: orderId });
+        // no commit/rollback here — connection stays open holding the lock,
+        // same as any real code path that forgets to release on an early branch
+    } catch (err) {
+        logger.error("Order lock failed", { endpoint: "/api/orders/lock-row", order_id: orderId, error_message: err.message });
+        if (client) { await client.query('ROLLBACK').catch(() => {}); client.release(); }
+        res.status(500).json({ error: "Lock acquisition failed" });
+    }
+});
+
+
+
+app.post('/api/orders/checkout-slow', async (req, res) => {
+    const { orderId = 1 } = req.body;
+    const start = Date.now();
+    logger.info("Checkout started", { endpoint: "/api/orders/checkout-slow", order_id: orderId });
+
+    let client;
+    try {
+        client = await pgPool.connect();
+        await client.query('BEGIN');
+        await client.query('SELECT * FROM employee_data WHERE id = $1 FOR UPDATE', [orderId]);
         await client.query('COMMIT');
         client.release();
-        
-        logger.info("Checkout completed successfully", { endpoint: "/api/orders/checkout", user_id: userId, status: "success" });
-        res.json({ status: "success" });
+
+        const durationMs = Date.now() - start;
+        logger.info("Checkout completed", { endpoint: "/api/orders/checkout-slow", order_id: orderId, status: "success", duration_ms: durationMs });
+        res.json({ status: "success", order_id: orderId });
     } catch (err) {
-        logger.error("Database or processing error during checkout", { 
-            endpoint: "/api/orders/checkout", 
-            error_message: err.message,
-            stack: err.stack
-        });
-        
-        if (client) {
-            await client.query('ROLLBACK').catch(() => {});
-            client.release();
-        }
+        logger.error("Checkout failed", { endpoint: "/api/orders/checkout-slow", order_id: orderId, error_message: err.message, duration_ms: Date.now() - start });
+        if (client) { await client.query('ROLLBACK').catch(() => {}); client.release(); }
         res.status(500).json({ error: "Checkout failed" });
     }
 });
 
+
+
 // ==========================================
-// SCENARIO 3: The Badly Optimized Query
+// ADMIN: data-gather / execution
 // ==========================================
-app.post('/api/reports/generate', async (req, res) => {
-    const { reportType } = req.body;
-    logger.info("Generating report", { endpoint: "/api/reports/generate", report_type: reportType });
-    
-    let client;
-    try {
-        client = await pgPool.connect();
-        await client.query('SELECT pg_sleep(90)'); 
-        client.release();
-        
-        logger.info("Report generated successfully", { endpoint: "/api/reports/generate", report_type: reportType, status: "success" });
-        res.json({ status: "success" });
-    } catch (err) {
-        logger.error("Report generation failed", { endpoint: "/api/reports/generate", report_type: reportType, error_message: err.message });
-        if (client) client.release();
-        res.status(500).json({ error: "Report generation failed" });
+app.get('/admin/requests/list', (req, res) => {
+    const thresholdSec = parseInt(req.query.threshold || '30', 10);
+    const now = Date.now();
+    const hanging = [];
+    for (const [id, record] of activeRequests.entries()) {
+        const ageSec = (now - record.startTime) / 1000;
+        if (ageSec > thresholdSec) hanging.push({ id, ageSec: Math.round(ageSec) });
     }
+    res.json({ count: hanging.length, requests: hanging });
 });
+
+
+
+app.post('/admin/requests/abort', (req, res) => {
+    const thresholdSec = parseInt(req.query.threshold || '30', 10);
+    const now = Date.now();
+    let abortedCount = 0;
+
+    for (const [id, record] of activeRequests.entries()) {
+        if ((now - record.startTime) / 1000 > thresholdSec) {
+            record.controller.abort();
+            if (!record.res.headersSent) {
+                record.res.status(504).json({ error: 'Request aborted by SRE AIOps agent' });
+            }
+            activeRequests.delete(id);
+            abortedCount++;
+        }
+    }
+    logger.warn("Requests aborted by agent action", { threshold_sec: thresholdSec, aborted_count: abortedCount });
+    res.json({ status: 'success', abortedRequests: abortedCount });
+});
+
+
 
 // ==========================================
 // 5. START SERVER

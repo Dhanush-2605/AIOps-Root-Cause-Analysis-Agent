@@ -4,12 +4,16 @@ from kubernetes.client.rest import ApiException
 import requests
 import json
 import re
+import os
+from kubernetes.stream import stream
 
 from langchain_google_community import GoogleSearchAPIWrapper
 
 
 import google.auth
 import google.auth.transport.requests
+BACKEND_ADMIN_URL = os.environ.get("BACKEND_ADMIN_URL", "http://backend-service:8080")
+
 
 # def get_gke_auth_token():
 #     """Fetches a Google OAuth token for GKE Workload Identity."""
@@ -162,74 +166,59 @@ def get_pod_status(namespace: str, pod_name: str) -> str:
         return f"Kubernetes API Error: {e.reason}"
 
 @tool
-def execute_postgres_query(query: str, namespace: str = "default") -> str:
-    """Executes a diagnostic SQL query against the Postgres database pod.
-    Useful for checking active connections, locks, and long-running queries via pg_stat_activity.
-    """
+def fetch_hanging_requests(threshold_sec: int = 30) -> str:
+    """Lists in-flight HTTP requests older than threshold_sec WITHOUT aborting 
+    them — for deciding whether an abort is warranted, not performing it."""
     try:
-        
-        v1_api, apps_v1_api = get_gke_client()
+        resp = requests.get(f"{BACKEND_ADMIN_URL}/admin/requests/list", params={"threshold": threshold_sec}, timeout=10)
+        resp.raise_for_status()
+        return json.dumps(resp.json(), indent=2)
+    except Exception as e:
+        return f"Failed to fetch hanging requests: {str(e)}"
 
-        
-        # Find the Postgres pod (Assuming standard labeling or name)
-        pods = v1_api.list_namespaced_pod(namespace=namespace, label_selector="app=postgres")
-        if not pods.items:
-            # Fallback if label selector fails
-            pods = v1_api.list_namespaced_pod(namespace=namespace)
-            pg_pods = [p for p in pods.items if "postgres" in p.metadata.name]
-            if not pg_pods:
-                return "Error: Could not locate a PostgreSQL pod in this namespace."
-            target_pod = pg_pods[0].metadata.name
-        else:
-            target_pod = pods.items[0].metadata.name
 
-        # Execute the query using psql via kubectl exec
-        # We wrap the query in quotes and pass it to the -c flag
-        exec_cmd = [
-            "psql", 
-            "-U", "postgres", # Assumes default user
-            "-c", query
-        ]
-        
+
+
+
+
+def _run_psql_readonly(query: str, namespace: str = "default") -> str:
+    """Internal helper — never exposed directly as a tool. Only called by the 
+    fixed diagnostic queries below, so the LLM can never construct arbitrary SQL."""
+    v1_api, _ = get_gke_client()
+    pods = v1_api.list_namespaced_pod(namespace=namespace, label_selector="app=postgres")
+    if not pods.items:
+        pods_all = v1_api.list_namespaced_pod(namespace=namespace)
+        pg_pods = [p for p in pods_all.items if "postgres" in p.metadata.name]
+        if not pg_pods:
+            return "Error: Could not locate a PostgreSQL pod in this namespace."
+        target_pod = pg_pods[0].metadata.name
+    else:
+        target_pod = pods.items[0].metadata.name
+
+    exec_cmd = ["psql", "-U", "postgres", "-c", query]
+    try:
+        # bug fix: use v1_api, not the undefined global v1
         resp = stream(
-            v1.connect_get_namespaced_pod_exec,
-            name=target_pod,
-            namespace=namespace,
-            command=exec_cmd,
+            v1_api.connect_get_namespaced_pod_exec,
+            name=target_pod, namespace=namespace, command=exec_cmd,
             stderr=True, stdin=False, stdout=True, tty=False
         )
-        return f"Query Results:\n{resp}"
+        return resp
     except Exception as e:
-        return f"Error executing Postgres query: {str(e)}"
+        return f"Error executing diagnostic query: {str(e)}"
 
-# @tool
-# def query_prometheus(promql_query: str) -> str:
-#     """
-#     Executes a PromQL query against the internal Prometheus server.
-#     Use this to check CPU, RAM, network latency, or historical trends.
-    
-#     Args:
-#         promql_query: A valid Prometheus query string.
-#     """
 
-#     PROMETHEUS_URL = "http://prometheus-main.monitoring.svc.cluster.local:9090/api/v1/query"
-    
-#     try:
-#         response = requests.get(PROMETHEUS_URL, params={'query': promql_query}, timeout=10)
-#         response.raise_for_status()
-#         data = response.json()
-        
-#         results = data.get('data', {}).get('result', [])
-#         if not results:
-#             return f"Prometheus returned no data for query: {promql_query}"
-            
-#         # Format the output so the LLM can easily read it
-#         formatted_results = []
-#         for result in results:
-#             metric_labels = result.get('metric', {})
-#             value = result.get('value', [None, "No Value"])[1]
-#             formatted_results.append(f"Labels: {metric_labels} | Value: {value}")
-            
-#         return "\n".join(formatted_results)
-#     except requests.exceptions.RequestException as e:
-#         return f"Failed to reach Prometheus API: {str(e)}"
+
+@tool
+def get_idle_in_transaction(namespace: str = "default", idle_threshold_sec: int = 30) -> str:
+    """Lists connections idle-in-transaction longer than idle_threshold_sec — these 
+    hold row locks and pool slots without doing work. This is exactly the bug pattern 
+    in /api/orders/checkout (missing ROLLBACK on early return)."""
+    query = f"""
+    SELECT pid, usename, application_name, now() - state_change AS idle_duration, query
+    FROM pg_stat_activity
+    WHERE state = 'idle in transaction'
+      AND now() - state_change > interval '{int(idle_threshold_sec)} seconds'
+    ORDER BY idle_duration DESC;
+    """
+    return _run_psql_readonly(query, namespace)
