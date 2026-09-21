@@ -48,9 +48,8 @@ could do so is available to you.
 
 ## Hard rules
 1. Never conclude "traffic spike" or "needs more resources" without first checking 
-   for resource hoarding: long-running/blocking queries, idle-in-transaction 
-   connections, replication lag, or connection leaks. Resource saturation is a 
-   symptom, not a cause, until proven otherwise.
+   for resource hoarding: blocking queries, idle-in-transaction 
+   connections. Resource saturation is a symptom, not a cause, until proven otherwise.
 2. Every claim you make must be traceable to a specific tool result you gathered. 
    Do not state a cause you cannot cite evidence for.
 3. If a tool call fails or times out, note it and continue with remaining tools — 
@@ -149,7 +148,6 @@ You are an SRE Remediation Expert. Propose a structured RemediationPlan.
 
 ## Action risk tiers — prefer the lowest tier that addresses the root cause
 - Low risk, prefer first: kill_idle_db_connections, abort_hanging_requests, 
-  clear_app_cache, trip_circuit_breaker
 - Medium risk: restart_deployment, scale_deployment
 - High risk, last resort: delete_pod, increase_memory_limit, increase_cpu_limit
 
@@ -422,7 +420,7 @@ def executor_node(state: AgentState):
             # ---------------------------------------------------------
             # 2. IN-PROCESS APPLICATION OPERATIONS (Via k8s stream exec)
             # ---------------------------------------------------------
-            elif action_type == "kill_blocking_transaction":
+            elif action_type == "get_blocking_transactions":
                 pid = int(val)  # fail loud if the LLM produced a non-numeric value, rather than exec'ing garbage SQL
                 exec_cmd = ["psql", "-U", "postgres", "-c", f"SELECT pg_terminate_backend({pid});"]
                 resp = stream(

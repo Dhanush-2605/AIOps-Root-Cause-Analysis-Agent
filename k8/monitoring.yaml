@@ -109,6 +109,31 @@ spec:
 # 5. SERVICEMONITORS (Application Discovery)
 # -------------------------------------------------------------------
 
+
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backend-servicemonitor
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: backend
+  namespaceSelector:
+    matchNames:
+      - default          # whichever namespace backend-service lives in
+  endpoints:
+    - port: http-metrics   # ← matches your Service's port name exactly
+      path: /metrics
+      interval: 15s
+
+
+
+
+
+
+
 # ---
 # apiVersion: monitoring.coreos.com/v1
 # kind: ServiceMonitor

@@ -164,6 +164,9 @@ def get_pod_status(namespace: str, pod_name: str) -> str:
         return json.dumps(status_info, indent=2)
     except ApiException as e:
         return f"Kubernetes API Error: {e.reason}"
+    
+    
+    
 
 @tool
 def fetch_hanging_requests(threshold_sec: int = 30) -> str:
@@ -195,9 +198,10 @@ def _run_psql_readonly(query: str, namespace: str = "default") -> str:
     else:
         target_pod = pods.items[0].metadata.name
 
-    exec_cmd = ["psql", "-U", "postgres", "-c", query]
+    # -t: tuples only (no headers/footer), -A: unaligned, -F',': comma-separated
+    # gives the LLM clean rows instead of psql's padded table format
+    exec_cmd = ["psql", "-U", "postgres", "-t", "-A", "-F,", "-c", query]
     try:
-        # bug fix: use v1_api, not the undefined global v1
         resp = stream(
             v1_api.connect_get_namespaced_pod_exec,
             name=target_pod, namespace=namespace, command=exec_cmd,
@@ -222,3 +226,33 @@ def get_idle_in_transaction(namespace: str = "default", idle_threshold_sec: int 
     ORDER BY idle_duration DESC;
     """
     return _run_psql_readonly(query, namespace)
+
+
+
+@tool
+def get_blocking_transactions(namespace: str = "default") -> str:
+    """Finds transactions currently blocking other transactions, with the 
+    blocking PID, blocked PID, and how long the blocker has held its lock. 
+    This is the authoritative check for the lock-contention scenario — if this 
+    returns a row, that PID is a confirmed cause, not just a correlation. Use 
+    this before proposing any termination action."""
+
+    query = """
+    SELECT blocked_locks.pid AS blocked_pid,
+           blocking_locks.pid AS blocking_pid,
+           blocking_activity.state AS blocking_state,
+           now() - blocking_activity.state_change AS blocking_duration,
+           blocking_activity.query AS blocking_query
+    FROM pg_catalog.pg_locks blocked_locks
+    JOIN pg_catalog.pg_locks blocking_locks
+        ON blocking_locks.locktype = blocked_locks.locktype
+        AND blocking_locks.pid != blocked_locks.pid
+        AND blocking_locks.granted
+    JOIN pg_catalog.pg_stat_activity blocking_activity
+        ON blocking_activity.pid = blocking_locks.pid
+    WHERE NOT blocked_locks.granted;
+    """
+    result = _run_psql_readonly(query, namespace)
+    if not result or "0 rows" in result:
+        return "No blocking transactions found — no lock contention detected at this time."
+    return result

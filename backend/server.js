@@ -46,7 +46,64 @@ const pgPool = new Pool({
 // 2. SRE CONTROL PLANE (For the AI Agent)
 // ==========================================
 const activeRequests = new Map();
-const circuitBreakers = { external_partner: { tripped: false } };
+const circuitBreakers = {
+    external_partner: { tripped: false },
+    stripe_api: { tripped: false }
+};
+
+
+
+const promClient = require('prom-client');
+const register = new promClient.Registry();
+promClient.collectDefaultMetrics({ register });
+
+const longRunningRequests = new promClient.Gauge({
+    name: 'http_requests_long_running_total',
+    help: 'Count of in-flight requests currently exceeding the hang threshold',
+    labelNames: ['threshold_sec'],
+    registers: [register]
+});
+
+// ---- Metric: request duration histogram (also lets you alert on p95/p99, not just count) ----
+const httpRequestDuration = new promClient.Histogram({
+    name: 'http_request_duration_seconds',
+    help: 'HTTP request duration in seconds',
+    labelNames: ['method', 'route', 'status_code'],
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 30, 45, 60, 90],
+    registers: [register]
+});
+
+app.get('/metrics', async (req, res) => {
+    res.set('Content-Type', register.contentType);
+    res.end(await register.metrics());
+});
+
+// ---- Duration tracking middleware — add alongside your existing activeRequests middleware ----
+app.use((req, res, next) => {
+    const start = process.hrtime.bigint();
+    res.on('finish', () => {
+        const durationSec = Number(process.hrtime.bigint() - start) / 1e9;
+        httpRequestDuration.observe(
+            { method: req.method, route: req.route?.path || req.path, status_code: res.statusCode },
+            durationSec
+        );
+    });
+    next();
+});
+
+// ---- Poll activeRequests every 5s and update the gauge ----
+// This is what turns your existing tracking Map into something Prometheus can alert on
+const HANG_THRESHOLD_SEC = 30;
+setInterval(() => {
+    const now = Date.now();
+    let count = 0;
+    for (const record of activeRequests.values()) {
+        if ((now - record.startTime) / 1000 > HANG_THRESHOLD_SEC) count++;
+    }
+    longRunningRequests.set({ threshold_sec: String(HANG_THRESHOLD_SEC) }, count);
+}, 5000);
+
+
 
 // Middleware to track in-flight requests so the AI Agent can abort them
 app.use((req, res, next) => {

@@ -11,7 +11,7 @@ class K8sAction(BaseModel):
         "restart_deployment",
         "increase_memory_limit",
         "increase_cpu_limit",
-        "kill_blocking_transaction",
+        "kill_idle_transaction",
         "abort_hanging_requests"
              
     ] = Field(
