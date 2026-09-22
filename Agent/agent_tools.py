@@ -6,13 +6,17 @@ import json
 import re
 import os
 from kubernetes.stream import stream
+import time
 
 from langchain_google_community import GoogleSearchAPIWrapper
 
 
 import google.auth
 import google.auth.transport.requests
+
+
 BACKEND_ADMIN_URL = os.environ.get("BACKEND_ADMIN_URL", "http://backend-service:8080")
+PROM_URL = os.environ.get("PROM_URL", "http://prometheus-service:9090")
 
 
 # def get_gke_auth_token():
@@ -256,3 +260,54 @@ def get_blocking_transactions(namespace: str = "default") -> str:
     if not result or "0 rows" in result:
         return "No blocking transactions found — no lock contention detected at this time."
     return result
+
+
+
+def _query_prometheus_range(promql: str, window_minutes: int, step: str = "30s") -> str:
+    """Internal helper — runs a PromQL range query over the trailing window_minutes. 
+    Not a tool itself; called by get_memory_trend."""
+    try:
+        end = time.time()
+        start = end - (window_minutes * 60)
+        resp = requests.get(
+            f"{PROM_URL}/api/v1/query_range",
+            params={"query": promql, "start": start, "end": end, "step": step},
+            timeout=15
+        )
+        resp.raise_for_status()
+        results = resp.json().get("data", {}).get("result", [])
+        if not results:
+            return f"No data for range query: {promql}"
+
+        lines = []
+        for series in results:
+            metric_label = series.get("metric", {})
+            values = series.get("values", [])  # list of [timestamp, value] pairs
+            if not values:
+                continue
+            # condense to first, last, min, max instead of dumping every point —
+            # keeps this readable for the LLM instead of a huge raw timeseries
+            nums = [float(v[1]) for v in values]
+            first_ts, first_val = values[0]
+            last_ts, last_val = values[-1]
+            lines.append(
+                f"{metric_label}: first={first_val} last={last_val} "
+                f"min={min(nums)} max={max(nums)} (n={len(nums)} points over {window_minutes}m)"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Prometheus range query failed: {str(e)}"
+    
+    
+@tool
+def get_memory_trend(pod_name: str, namespace: str = "default", window_minutes: int = 30) -> str:
+    """Returns RAM usage for a pod over the trailing window, alongside request 
+    rate for the same window, so growth can be judged against load rather than 
+    in isolation. Use this to distinguish genuine memory need (grows with load, 
+    plateaus) from a leak (grows regardless of load, never drops)."""
+
+    mem_query = f'container_memory_working_set_bytes{{pod="{pod_name}"}}'
+    load_query = f'sum(rate(http_requests_total{{pod="{pod_name}"}}[5m]))'
+    mem_result = _query_prometheus_range(mem_query, window_minutes)
+    load_result = _query_prometheus_range(load_query, window_minutes)
+    return f"Memory trend:\n{mem_result}\n\nRequest rate over same window:\n{load_result}"
