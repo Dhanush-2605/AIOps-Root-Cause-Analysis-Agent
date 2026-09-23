@@ -325,6 +325,53 @@ app.post('/admin/requests/abort', (req, res) => {
 
 
 
+
+
+// SCENARIO Genuine Memory Demand (bounded cache, scales with load, plateaus)
+
+const MAX_CACHE_ENTRIES = 5000;
+const CACHE_ENTRY_SIZE_BYTES = 50 * 1024; // 50KB per entry — deliberately sized to be visible in metrics
+const requestCache = new Map();
+
+function evictOldest(maxEntries) {
+    while (requestCache.size > maxEntries) {
+        const oldestKey = requestCache.keys().next().value;
+        requestCache.delete(oldestKey);
+    }
+}
+
+// Periodic TTL sweep — entries older than 20s get evicted regardless of cache size,
+// so memory comes back down once load drops (this is what makes it "genuine
+// demand" rather than a leak — it's load-correlated in both directions)
+setInterval(() => {
+    const now = Date.now();
+    let evicted = 0;
+    for (const [key, entry] of requestCache.entries()) {
+        if (now - entry.createdAt > 20000) {
+            requestCache.delete(key);
+            evicted++;
+        }
+    }
+    if (evicted > 0) {
+        logger.info("Cache TTL sweep completed", { evicted_count: evicted, cache_size: requestCache.size });
+    }
+}, 10000);
+
+app.post('/api/catalog/lookup', (req, res) => {
+    const { itemId = Math.floor(Math.random() * 100000) } = req.body;
+    const cacheKey = `item_${itemId}`;
+
+    if (!requestCache.has(cacheKey)) {
+        // simulate building/caching a real response payload
+        const payload = Buffer.alloc(CACHE_ENTRY_SIZE_BYTES, 'x');
+        requestCache.set(cacheKey, { payload, createdAt: Date.now() });
+        evictOldest(MAX_CACHE_ENTRIES);
+    }
+
+    logger.info("Catalog lookup served", { endpoint: "/api/catalog/lookup", item_id: itemId, cache_size: requestCache.size });
+    res.json({ status: "success", item_id: itemId, cache_size: requestCache.size });
+});
+
 // ==========================================
 // 5. START SERVER
 // ==========================================
