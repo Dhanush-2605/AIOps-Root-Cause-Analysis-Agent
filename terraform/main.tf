@@ -138,3 +138,7 @@ resource "google_service_account_iam_member" "pod_workload_identity_binding" {
 #   # Authorizes the K8s service account 'ai-agent-k8s-sa' in the default namespace
 #   member = "serviceAccount:${var.project_id}.svc.id.goog[default/ai-agent-k8s-sa]"
 # }
+
+
+
+

@@ -242,19 +242,16 @@ def get_blocking_transactions(namespace: str = "default") -> str:
     this before proposing any termination action."""
 
     query = """
-    SELECT blocked_locks.pid AS blocked_pid,
-           blocking_locks.pid AS blocking_pid,
-           blocking_activity.state AS blocking_state,
-           now() - blocking_activity.state_change AS blocking_duration,
-           blocking_activity.query AS blocking_query
-    FROM pg_catalog.pg_locks blocked_locks
-    JOIN pg_catalog.pg_locks blocking_locks
-        ON blocking_locks.locktype = blocked_locks.locktype
-        AND blocking_locks.pid != blocked_locks.pid
-        AND blocking_locks.granted
-    JOIN pg_catalog.pg_stat_activity blocking_activity
-        ON blocking_activity.pid = blocking_locks.pid
-    WHERE NOT blocked_locks.granted;
+     SELECT
+    blocked.pid AS blocked_pid,
+    blocked.query AS blocked_query,
+    blocking.pid AS blocking_pid,
+    blocking.query AS blocking_query,
+    now() - blocking.state_change AS blocking_duration
+FROM pg_stat_activity blocked
+CROSS JOIN LATERAL unnest(pg_blocking_pids(blocked.pid)) AS blocking_pid
+JOIN pg_stat_activity blocking ON blocking.pid = blocking_pid;
+
     """
     result = _run_psql_readonly(query, namespace)
     if not result or "0 rows" in result:
