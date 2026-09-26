@@ -1,144 +1,77 @@
-
-
-
 # ==========================================================================
-# 1. PLATFORM SERVICES & APIS
+# 1. RESOURCE GROUP
 # ==========================================================================
+# GCP has no direct equivalent to this — a resource group is Azure's
+# container for everything below. Your GCP project_id maps loosely to this.
 
-resource "google_project_service" "container" {
-  service            = "container.googleapis.com"
-  disable_on_destroy = false
-}
-
-resource "google_project_service" "secretmanager" {
-  service            = "secretmanager.googleapis.com"
-  disable_on_destroy = false
+resource "azurerm_resource_group" "main" {
+  name     = var.resource_group_name
+  location = var.location
 }
 
 # ==========================================================================
-# 2. GKE AUTOPILOT CLUSTER footprint
+# 2. AKS CLUSTER footprint (equivalent to your GKE Autopilot cluster)
 # ==========================================================================
+# NOTE: Azure has no exact 1:1 match for GKE Autopilot's fully-managed,
+# pay-per-pod model. "AKS Automatic" is the closest match if your azurerm
+# provider version supports it. Below is a standard AKS cluster with
+# node-pool autoscaling, which is the safe, broadly-supported equivalent —
+# swap in aks_automatic settings later if you want to get closer to Autopilot.
 
-resource "google_container_cluster" "primary" {
-  name             = "gke-production-cluster"
-  location         = var.region
-  enable_autopilot = true
+resource "azurerm_kubernetes_cluster" "primary" {
+  name                = "aks-production-cluster"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  dns_prefix          = "aksprod"
 
-  deletion_protection = false
-  secret_manager_config {
-    enabled = true
+  # Required so pods can federate with Azure managed identities (workload identity) —
+  # actual identity bindings live in access.tf
+  oidc_issuer_enabled       = true
+  workload_identity_enabled = true
+
+  default_node_pool {
+    name                 = "system"
+    vm_size              = "Standard_D2s_v5"
+    auto_scaling_enabled = true
+    min_count            = 1
+    max_count            = 3
   }
 
-  depends_on = [google_project_service.container]
-}
-
-# ==========================================================================
-# 3. SECRET CONFIGURATION LAYER (GCP Secret Manager)
-# ==========================================================================
-
-resource "google_secret_manager_secret" "db_password" {
-  secret_id = "db-password"
-  replication {
-    auto {}
+  identity {
+    type = "SystemAssigned"
   }
-  depends_on = [google_project_service.secretmanager]
 }
-
-resource "google_secret_manager_secret_version" "db_password_version" {
-  secret      = google_secret_manager_secret.db_password.id
-  secret_data = var.db_root_password
-}
-
-
 
 # ==========================================================================
-# 4. CONTAINER REGISTRY (Artifact Registry)
+# 3. SECRET CONFIGURATION LAYER (Azure Key Vault = GCP Secret Manager)
 # ==========================================================================
 
-# Enable the Artifact Registry API
-resource "google_project_service" "artifactregistry" {
-  service            = "artifactregistry.googleapis.com"
-  disable_on_destroy = false
+data "azurerm_client_config" "current" {}
+
+resource "azurerm_key_vault" "main" {
+  name                       = "kv-prod-secrets" # must be globally unique, <=24 chars
+  location                   = azurerm_resource_group.main.location
+  resource_group_name        = azurerm_resource_group.main.name
+  tenant_id                  = var.tenant_id
+  sku_name                   = "standard"
+  enable_rbac_authorization  = true # access grants live in access.tf
+  purge_protection_enabled   = false
 }
 
-# Create the Docker Repository
-resource "google_artifact_registry_repository" "app_repo" {
-  location      = var.region
-  repository_id = "nodejs-app-repo"
-  description   = "Private Docker repository for frontend and backend images"
-  format        = "DOCKER"
-  
-  depends_on = [google_project_service.artifactregistry]
+resource "azurerm_key_vault_secret" "db_password" {
+  name         = "db-password"
+  value        = var.db_root_password
+  key_vault_id = azurerm_key_vault.main.id
 }
-
-
 
 # ==========================================================================
-# 5. RUNTIME WORKLOAD IDENTITY BRIDGE (Pod to GCP Vault)
+# 4. CONTAINER REGISTRY (Azure Container Registry = GCP Artifact Registry)
 # ==========================================================================
 
-# The Google-side execution identity
-resource "google_service_account" "backend_gsa" {
-  account_id   = "backend-db-accessor"
-  display_name = "Pod Runtime Identity for Database Access"
+resource "azurerm_container_registry" "app_repo" {
+  name                = "acrnodejsapprepo" # must be globally unique, alphanumeric only, no dashes
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  sku                 = "Standard"
+  admin_enabled       = false
 }
-
-# Grant the Google Identity rights to read from the vault slot
-resource "google_secret_manager_secret_iam_member" "backend_secret_access" {
-  secret_id = google_secret_manager_secret.db_password.id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.backend_gsa.email}"
-}
-
-# The cryptographic binding linking the Kubernetes Pod identifier to the Google identity
-resource "google_service_account_iam_member" "pod_workload_identity_binding" {
-  service_account_id = google_service_account.backend_gsa.name
-  role               = "roles/iam.workloadIdentityUser"
-  member             = "serviceAccount:${var.project_id}.svc.id.goog[default/backend-sa]"
-}
-
-
-
-# ==========================================================================
- # AI SRE AGENT SECRETS & IDENTITIES
-# ==========================================================================
-
-# # 1. Secret Manager Vault for the Gemini API Key
-# resource "google_secret_manager_secret" "gemini_api_key" {
-#   secret_id = "gemini-api-key"
-#   replication {
-#     auto {}
-#   }
-# }
-
-# # 2. Ingest the actual API key value into the vault safely
-# resource "google_secret_manager_secret_version" "gemini_api_key_version" {
-#   secret      = google_secret_manager_secret.gemini_api_key.id
-#   secret_data = var.gemini_api_key
-# }
-
-# # 3. Dedicated Google Service Account for the CrewAI Pod
-# resource "google_service_account" "ai_agent_sa" {
-#   account_id   = "ai-sre-agent"
-#   display_name = "AI SRE Agent Service Account"
-# }
-
-# # 4. Strict IAM Policy: Allow the AI Agent to read ONLY the Gemini key
-# resource "google_secret_manager_secret_iam_member" "ai_agent_secret_access" {
-#   secret_id = google_secret_manager_secret.gemini_api_key.id
-#   role      = "roles/secretmanager.secretAccessor"
-#   member    = "serviceAccount:${google_service_account.ai_agent_sa.email}"
-# }
-
-# # 5. Workload Identity Bridge: Connects GKE to GCP IAM for the AI Agent
-# resource "google_service_account_iam_member" "ai_agent_workload_identity" {
-#   service_account_id = google_service_account.ai_agent_sa.name
-#   role               = "roles/iam.workloadIdentityUser"
-  
-#   # Authorizes the K8s service account 'ai-agent-k8s-sa' in the default namespace
-#   member = "serviceAccount:${var.project_id}.svc.id.goog[default/ai-agent-k8s-sa]"
-# }
-
-
-
-

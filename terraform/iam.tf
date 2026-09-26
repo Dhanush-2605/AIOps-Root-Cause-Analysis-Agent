@@ -1,62 +1,104 @@
-# 1. Enable IAM Credentials API
-resource "google_project_service" "iamcredentials" {
-  service            = "iamcredentials.googleapis.com"
-  disable_on_destroy = false
+# ==========================================================================
+# BACKEND POD → KEY VAULT WORKLOAD IDENTITY
+# ==========================================================================
+
+# The Azure-side execution identity (equivalent to google_service_account)
+resource "azurerm_user_assigned_identity" "backend_identity" {
+  name                = "backend-db-accessor"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
 }
 
-# 2. Create the Google Service Account that the GitHub Pipeline will assume
-resource "google_service_account" "github_actions_sa" {
-  account_id   = "github-actions-pipeline"
-  display_name = "GitHub Actions CI/CD Pipeline Account"
+# Grant the identity rights to read secrets from the vault (RBAC role, not an IAM policy binding)
+resource "azurerm_role_assignment" "backend_secret_access" {
+  scope                = azurerm_key_vault.main.id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = azurerm_user_assigned_identity.backend_identity.principal_id
 }
 
-# 3. Grant the Pipeline SA administrative control over GKE, Secrets, and Compute
-resource "google_project_iam_member" "pipeline_roles" {
+# The cryptographic binding linking the Kubernetes ServiceAccount to the Azure identity
+# (equivalent to google_service_account_iam_member workload identity binding)
+resource "azurerm_federated_identity_credential" "pod_workload_identity_binding" {
+  name                = "backend-pod-federation"
+  resource_group_name = azurerm_resource_group.main.name
+  audience            = ["api://AzureADTokenExchange"]
+  issuer              = azurerm_kubernetes_cluster.primary.oidc_issuer_url
+  parent_id           = azurerm_user_assigned_identity.backend_identity.id
+  subject             = "system:serviceaccount:default:backend-sa"
+}
+
+# ==========================================================================
+# GITHUB ACTIONS CI/CD PIPELINE IDENTITY
+# ==========================================================================
+
+# 1. The Azure identity that the GitHub Pipeline will assume
+#    (equivalent to google_service_account.github_actions_sa)
+resource "azurerm_user_assigned_identity" "github_actions_identity" {
+  name                = "github-actions-pipeline"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+}
+
+# 2. Grant the Pipeline identity control over AKS, Key Vault, networking, and ACR
+#    (role scope is the resource group — the closest equivalent to project-level IAM in GCP)
+resource "azurerm_role_assignment" "pipeline_roles" {
   for_each = toset([
-    "roles/container.admin",       # Allows full management of GKE clusters
-    "roles/secretmanager.admin",   # Allows managing secrets in Secret Manager
-    "roles/compute.admin",         # Allows managing GKE network footprints
-    "roles/iam.serviceAccountUser", # Allows assigning service accounts to GKE nodes
-    "roles/artifactregistry.writer" # Allows GitHub to push docker images!
+    "Azure Kubernetes Service Cluster Admin Role", # full management of AKS clusters
+    "Key Vault Administrator",                     # manage secrets in Key Vault
+    "Network Contributor",                         # manage network footprints
+    "Managed Identity Operator",                   # assign managed identities to AKS nodes
+    "AcrPush",                                      # allows GitHub to push docker images
   ])
-  project = var.project_id
-  role    = each.value
-  member  = "serviceAccount:${google_service_account.github_actions_sa.email}"
+  scope                = azurerm_resource_group.main.id
+  role_definition_name = each.value
+  principal_id         = azurerm_user_assigned_identity.github_actions_identity.principal_id
 }
 
-# 4. Create a Workload Identity Pool for GitHub
-resource "google_iam_workload_identity_pool" "github_pool" {
-  workload_identity_pool_id = "github-actions-pool-v3"
-  display_name              = "GitHub Actions Pool-v3"
+# 3. Federated credential connecting GitHub's OIDC token to the Azure identity
+#    (equivalent to the Workload Identity Pool + Provider + binding trio in GCP)
+resource "azurerm_federated_identity_credential" "github_sa_binding" {
+  name                = "github-actions-federation"
+  resource_group_name = azurerm_resource_group.main.name
+  audience            = ["api://AzureADTokenExchange"]
+  issuer              = "https://token.actions.githubusercontent.com"
+  parent_id           = azurerm_user_assigned_identity.github_actions_identity.id
+
+  # Restrict to your specific repo + branch — adjust the ref, or use
+  # "repo:${var.github_repo}:pull_request" / ":environment:prod" for other trigger types
+  subject = "repo:${var.github_repo}:ref:refs/heads/main"
 }
 
-# 5. Create the OIDC Provider connecting GitHub to GCP
-resource "google_iam_workload_identity_pool_provider" "github_provider" {
-  workload_identity_pool_id          = google_iam_workload_identity_pool.github_pool.workload_identity_pool_id
-  workload_identity_pool_provider_id = "github-provider"
-  attribute_mapping = {
-    "google.subject"       = "assertion.sub"
-    "attribute.repository" = "assertion.repository"
-  }
+# ==========================================================================
+# AI SRE AGENT SECRETS & IDENTITIES (commented out, matching source)
+# ==========================================================================
 
-  # This tells the bouncer: "If the raw token doesn't belong to our repository, 
-  # don't even bother translating it. Drop it immediately."
-  attribute_condition = "assertion.repository == '${var.github_repo}'"
-  oidc {
-    issuer_uri = "https://token.actions.githubusercontent.com"
-  }
-}
+# # Key Vault secret for the Gemini API key
+# resource "azurerm_key_vault_secret" "gemini_api_key" {
+#   name         = "gemini-api-key"
+#   value        = var.gemini_api_key
+#   key_vault_id = azurerm_key_vault.main.id
+# }
 
-# 6. Allow your specific GitHub Repository to assume the Pipeline GSA
+# # Dedicated managed identity for the CrewAI pod
+# resource "azurerm_user_assigned_identity" "ai_agent_identity" {
+#   name                = "ai-sre-agent"
+#   resource_group_name = azurerm_resource_group.main.name
+#   location            = azurerm_resource_group.main.location
+# }
 
-resource "google_service_account_iam_member" "github_sa_binding" {
-  # The specific costume (GSA) being requested
-  service_account_id = google_service_account.github_actions_sa.name
-  
-  # The specific permission that allows token exchange (impersonation)
-  role               = "roles/iam.workloadIdentityUser" 
-  
-  # The strict rule: Only grant this if the incoming mapped token exactly matches your repo
-member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github_pool.name}/attribute.repository/${var.github_repo}"
+# # Strict RBAC: allow the AI agent to read only the Gemini key's vault
+# resource "azurerm_role_assignment" "ai_agent_secret_access" {
+#   scope                = azurerm_key_vault.main.id
+#   role_definition_name = "Key Vault Secrets User"
+#   principal_id         = azurerm_user_assigned_identity.ai_agent_identity.principal_id
+# }
 
-}
+# # Workload identity bridge: connects AKS to Azure for the AI Agent
+# resource "azurerm_federated_identity_credential" "ai_agent_workload_identity" {
+#   name                = "ai-agent-federation"
+#   resource_group_name = azurerm_resource_group.main.name
+#   audience            = ["api://AzureADTokenExchange"]
+#   issuer              = azurerm_kubernetes_cluster.primary.oidc_issuer_url
+#   parent_id           = azurerm_user_assigned_identity.ai_agent_identity.id
+#   subject             = "system:serviceaccount:default:ai-agent-k8s-sa"
+# }

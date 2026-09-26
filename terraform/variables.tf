@@ -1,28 +1,38 @@
-variable "project_id" {
-  description = "The absolute Google Cloud Project ID."
+variable "subscription_id" {
+  description = "Azure subscription ID"
   type        = string
 }
 
-variable "region" {
-  description = "The target deployment region."
+variable "tenant_id" {
+  description = "Azure AD (Entra ID) tenant ID"
   type        = string
-  default     = "us-central1"
 }
 
-variable "github_repo" {
-  description = "The GitHub repository formatted as username/repo."
+variable "location" {
+  description = "Azure region (equivalent to GCP var.region)"
   type        = string
+  default     = "eastus"
+}
+
+variable "resource_group_name" {
+  description = "Resource group that holds everything (GCP has no direct equivalent — a project is the closest analog)"
+  type        = string
+  default     = "rg-production"
 }
 
 variable "db_root_password" {
-  description = "The application database password injected into Secret Manager."
+  description = "Database root password, stored in Key Vault"
   type        = string
   sensitive   = true
 }
 
-
-variable "gemini_api_key" {
-
+variable "github_repo" {
+  description = "GitHub repo allowed to assume the pipeline identity, format: org/repo"
   type        = string
-  default="temp"
 }
+
+# variable "gemini_api_key" {
+#   description = "API key for the AI SRE agent (kept commented, matching source)"
+#   type        = string
+#   sensitive   = true
+# }

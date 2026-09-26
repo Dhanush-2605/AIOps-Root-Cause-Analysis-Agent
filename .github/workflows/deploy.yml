@@ -6,14 +6,15 @@ on:
       - main
 
 env:
-  PROJECT_ID: core-appliance-338915
-  REGION: asia-south1
-  REPO_NAME: nodejs-app-repo
-  IMAGE_NAME: nodejs-app
-  CLUSTER_NAME: gke-production-cluster
-  # Replace the line below with your exact provider string
-  WORKLOAD_IDENTITY_PROVIDER: 'projects/815415208014/locations/global/workloadIdentityPools/github-actions-pool-v3/providers/github-provider'
-  SERVICE_ACCOUNT: 'github-actions-pipeline@core-appliance-338915.iam.gserviceaccount.com'
+  RESOURCE_GROUP: rg-production
+  ACR_NAME: acrnodejsapprepo
+  ACR_LOGIN_SERVER: acrnodejsapprepo.azurecr.io
+  CLUSTER_NAME: aks-production-cluster
+  # These three come straight from your `terraform output` (workload_identity_client_id,
+  # tenant_id, subscription_id). Store them as repo secrets, not plain env vars.
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
 jobs:
   build-and-deploy:
@@ -26,44 +27,41 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Authenticate to Google Cloud
-        id: auth
-        uses: google-github-actions/auth@v2
+      - name: Authenticate to Azure
+        uses: azure/login@v2
         with:
-          workload_identity_provider: '${{ env.WORKLOAD_IDENTITY_PROVIDER }}'
-          service_account: '${{ env.SERVICE_ACCOUNT }}'
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
       - name: Configure Docker Auth
-        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+        run: az acr login --name ${{ env.ACR_NAME }}
 
       - name: Build and Push Backend Image
         run: |
-          BACKEND_TAG="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/backend:${GITHUB_SHA}"
+          BACKEND_TAG="${{ env.ACR_LOGIN_SERVER }}/backend:${GITHUB_SHA}"
           docker build -t $BACKEND_TAG ./backend
           docker push $BACKEND_TAG
           echo "BACKEND_TAG=$BACKEND_TAG" >> $GITHUB_ENV
-        
+
       - name: Build and Push Python Image
         run: |
-          PYTHON_TAG="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/python:${GITHUB_SHA}"
+          PYTHON_TAG="${{ env.ACR_LOGIN_SERVER }}/python:${GITHUB_SHA}"
           docker build -t $PYTHON_TAG ./Agent
           docker push $PYTHON_TAG
           echo "PYTHON_TAG=$PYTHON_TAG" >> $GITHUB_ENV
 
       - name: Build and Push Frontend Image
         run: |
-          FRONTEND_TAG="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/frontend:${GITHUB_SHA}"
+          FRONTEND_TAG="${{ env.ACR_LOGIN_SERVER }}/frontend:${GITHUB_SHA}"
           docker build -t $FRONTEND_TAG ./frontend
           docker push $FRONTEND_TAG
           echo "FRONTEND_TAG=$FRONTEND_TAG" >> $GITHUB_ENV
 
-      - name: Connect to GKE Cluster
-        uses: google-github-actions/get-gke-credentials@v2
-        with:
-          cluster_name: '${{ env.CLUSTER_NAME }}'
-          location: '${{ env.REGION }}'
+      - name: Connect to AKS Cluster
+        run: az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.CLUSTER_NAME }} --overwrite-existing
 
-      - name: Deploy to GKE
+      - name: Deploy to AKS
         run: |
           # Inject the newly built image tags into the K8s manifest
           sed -i "s|BACKEND_IMAGE_PLACEHOLDER|${{ env.BACKEND_TAG }}|g" k8/k8s.yaml
@@ -73,19 +71,15 @@ jobs:
       - name: Deploy Prometheus Stack via Helm
         run: |
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-                  helm repo update
+          helm repo update
 
-                  
-                  helm upgrade --install prometheus-stack prometheus-community/kube-prometheus-stack \
-                    --namespace monitoring \
-                    --create-namespace \
-                    -f helm/values.yaml \
-                    --atomic \
-                    --timeout 10m
+          helm upgrade --install prometheus-stack prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --create-namespace \
+            -f helm/values.yaml \
+            --atomic \
+            --timeout 10m
 
       - name: Apply Custom Manifests
         run: |
-              kubectl apply -f k8/
-
-
-       
+          kubectl apply -f k8/
