@@ -59,7 +59,7 @@ jobs:
           echo "FRONTEND_TAG=$FRONTEND_TAG" >> $GITHUB_ENV
 
       - name: Connect to AKS Cluster
-        run: az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.CLUSTER_NAME }} --overwrite-existing
+        run: az aks get-credentials --resource-group rg-production --name aks-production-cluster --overwrite-existing --admin
 
       - name: Deploy to AKS
         run: |
