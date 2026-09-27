@@ -41,9 +41,32 @@ async function fireBurst(url, count, bodyFn) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(bodyFn ? bodyFn(i) : {}),
-    }).catch(() => {})
+    }).catch(() => {}),
   );
   await Promise.allSettled(requests);
+}
+
+async function fireStaggeredBurst(
+  url,
+  totalCount,
+  bodyFn,
+  { batchSize = 20, intervalMs = 750 } = {},
+) {
+  let sent = 0;
+  while (sent < totalCount) {
+    const thisBatch = Math.min(batchSize, totalCount - sent);
+    const requests = Array.from({ length: thisBatch }, (_, i) => {
+      const idx = sent + i;
+      return fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(bodyFn ? bodyFn(idx) : {}),
+      }).catch(() => {});
+    });
+    await Promise.allSettled(requests);
+    sent += thisBatch;
+    if (sent < totalCount) await new Promise((r) => setTimeout(r, intervalMs));
+  }
 }
 
 // ==========================================
@@ -104,13 +127,35 @@ const SCENARIOS = [
     accent: "teal",
     expectedAlertName: "PodMemoryNearLimit",
     run: async () => {
-      // Real burst of traffic against the bounded cache — memory actually
-      // rises here, and will actually plateau/drain, unlike a faked metric.
-      await fireBurst(`${NODE_BASE_URL}/api/catalog/lookup`, 400, (i) => ({
-        itemId: i % 4000,
-      }));
+      // 20 requests every 750ms → 400 total over ~15s. That window matters:
+      // it's long enough to span at least one Prometheus scrape interval
+      // (yours is 15s) while memory is elevated, so the alert actually has
+      // real data to fire on, not just a blip between scrapes.
+      await fireStaggeredBurst(
+        `${NODE_BASE_URL}/api/catalog/lookup`,
+        400,
+        (i) => ({ itemId: i % 4000 }),
+        { batchSize: 20, intervalMs: 750 },
+      );
     },
   },
+  {
+    id: "memory-leak",
+    label: "Memory Leak",
+    description: "Unbounded growth, load-independent, no plateau",
+    icon: Droplets,
+    accent: "rose",
+    expectedAlertName: "PodMemoryNearLimit",
+    run: async () => {
+      await fireStaggeredBurst(
+        `${NODE_BASE_URL}/api/reports/export`,
+        400,
+        (i) => ({ reportId: i }),
+        { batchSize: 20, intervalMs: 750 },
+      );
+    },
+  },
+  
   {
     id: "memory-leak",
     label: "Memory Leak",
@@ -128,7 +173,11 @@ const SCENARIOS = [
 
 const ACCENTS = {
   amber: { text: "text-amber-400", bg: "bg-amber-500/10", dot: "bg-amber-400" },
-  violet: { text: "text-violet-400", bg: "bg-violet-500/10", dot: "bg-violet-400" },
+  violet: {
+    text: "text-violet-400",
+    bg: "bg-violet-500/10",
+    dot: "bg-violet-400",
+  },
   teal: { text: "text-teal-400", bg: "bg-teal-500/10", dot: "bg-teal-400" },
   rose: { text: "text-rose-400", bg: "bg-rose-500/10", dot: "bg-rose-400" },
   slate: { text: "text-gray-400", bg: "bg-gray-700/40", dot: "bg-gray-500" },
@@ -141,7 +190,10 @@ function accentForAlert(alertName) {
 
 function relativeTime(iso) {
   if (!iso) return "";
-  const diffSec = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  const diffSec = Math.max(
+    0,
+    Math.floor((Date.now() - new Date(iso).getTime()) / 1000),
+  );
   if (diffSec < 60) return `${diffSec}s ago`;
   if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
   if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
@@ -173,11 +225,15 @@ export default function AIOpsDashboard() {
     const fetchIncidents = async () => {
       try {
         const response = await fetch(`${AGENT_BASE_URL}/incidents`);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        if (!response.ok)
+          throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         setIncidents(data.active_threads || []);
       } catch (error) {
-        console.warn("Incidents endpoint not reachable yet. Retrying in 5s...", error.message);
+        console.warn(
+          "Incidents endpoint not reachable yet. Retrying in 5s...",
+          error.message,
+        );
       }
     };
     // Raw Alertmanager feed — separate from agent thread state, so an alert
@@ -186,11 +242,15 @@ export default function AIOpsDashboard() {
     const fetchAlerts = async () => {
       try {
         const response = await fetch(`${AGENT_BASE_URL}/alerts`);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        if (!response.ok)
+          throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         setAlerts(data.alerts || []);
       } catch (error) {
-        console.warn("Alerts endpoint not reachable yet. Retrying in 5s...", error.message);
+        console.warn(
+          "Alerts endpoint not reachable yet. Retrying in 5s...",
+          error.message,
+        );
       }
     };
     fetchIncidents();
@@ -207,14 +267,17 @@ export default function AIOpsDashboard() {
   useEffect(() => {
     if (!pendingScenario) return;
     const matched = alerts.some(
-      (a) => a.alertname === pendingScenario.expectedAlertName && new Date(a.startsAt).getTime() >= pendingScenario.firedAt - 5000
+      (a) =>
+        a.alertname === pendingScenario.expectedAlertName &&
+        new Date(a.startsAt).getTime() >= pendingScenario.firedAt - 5000,
     );
     if (matched) setPendingScenario(null);
   }, [alerts, pendingScenario]);
 
   useEffect(() => {
     function handleClickOutside(e) {
-      if (pickerRef.current && !pickerRef.current.contains(e.target)) setPickerOpen(false);
+      if (pickerRef.current && !pickerRef.current.contains(e.target))
+        setPickerOpen(false);
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
@@ -222,20 +285,28 @@ export default function AIOpsDashboard() {
 
   const activeInvestigations = useMemo(
     () => incidents.filter((i) => !RESOLVED_STATUSES.has(i.status)),
-    [incidents]
+    [incidents],
   );
   const historyIncidents = useMemo(
     () => incidents.filter((i) => RESOLVED_STATUSES.has(i.status)),
-    [incidents]
+    [incidents],
   );
-  const firingAlerts = useMemo(() => alerts.filter((a) => a.status === "firing"), [alerts]);
+  const firingAlerts = useMemo(
+    () => alerts.filter((a) => a.status === "firing"),
+    [alerts],
+  );
 
   const threadForAlert = (alert) =>
-    incidents.find((i) => i.alert_name === alert.alertname && i.target_resource === alert.pod);
+    incidents.find(
+      (i) =>
+        i.alert_name === alert.alertname && i.target_resource === alert.pod,
+    );
 
   const goToThread = (thread) => {
     setSelectedThread(thread);
-    setActiveTab(RESOLVED_STATUSES.has(thread.status) ? "history" : "investigations");
+    setActiveTab(
+      RESOLVED_STATUSES.has(thread.status) ? "history" : "investigations",
+    );
   };
 
   const triggerScenario = async (scenario) => {
@@ -249,13 +320,19 @@ export default function AIOpsDashboard() {
       // Alertmanager fires HangingRequestsDetected / DatabaseLockContentionDetected /
       // PodMemoryNearLimit for real once the threshold is genuinely crossed.
       await scenario.run();
-      const fired = { label: scenario.label, expectedAlertName: scenario.expectedAlertName, firedAt: Date.now() };
+      const fired = {
+        label: scenario.label,
+        expectedAlertName: scenario.expectedAlertName,
+        firedAt: Date.now(),
+      };
       setPendingScenario(fired);
       // Clear the "waiting" banner after a while regardless — by then either
       // the real alert has shown up in the feed, or the scrape/`for:` window
       // has simply passed without crossing threshold.
       setTimeout(() => {
-        setPendingScenario((p) => (p && p.firedAt === fired.firedAt ? null : p));
+        setPendingScenario((p) =>
+          p && p.firedAt === fired.firedAt ? null : p,
+        );
       }, 60000);
     } catch (error) {
       console.error("Failed to trigger scenario against backend", error);
@@ -291,7 +368,8 @@ export default function AIOpsDashboard() {
         <div className="p-4 border-b border-gray-700">
           <div className="flex justify-between items-center">
             <h2 className="text-lg font-bold flex items-center">
-              <Activity className="mr-2 h-5 w-5 text-blue-400" /> AIOps Command Center
+              <Activity className="mr-2 h-5 w-5 text-blue-400" /> AIOps Command
+              Center
             </h2>
 
             <div className="relative" ref={pickerRef}>
@@ -301,7 +379,9 @@ export default function AIOpsDashboard() {
                 title="Simulate a chaos scenario"
               >
                 Simulate Incident
-                <ChevronDown className={`h-3 w-3 transition-transform ${pickerOpen ? "rotate-180" : ""}`} />
+                <ChevronDown
+                  className={`h-3 w-3 transition-transform ${pickerOpen ? "rotate-180" : ""}`}
+                />
               </button>
 
               {pickerOpen && (
@@ -324,7 +404,9 @@ export default function AIOpsDashboard() {
                           <span className="block text-sm font-medium text-gray-100">
                             {isPending ? "Firing..." : scenario.label}
                           </span>
-                          <span className="block text-xs text-gray-400 mt-0.5">{scenario.description}</span>
+                          <span className="block text-xs text-gray-400 mt-0.5">
+                            {scenario.description}
+                          </span>
                         </span>
                       </button>
                     );
@@ -342,15 +424,17 @@ export default function AIOpsDashboard() {
                 tab.id === "alerts"
                   ? firingAlerts.length
                   : tab.id === "investigations"
-                  ? activeInvestigations.length
-                  : historyIncidents.length;
+                    ? activeInvestigations.length
+                    : historyIncidents.length;
               const isActive = activeTab === tab.id;
               return (
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
                   className={`flex-1 flex items-center justify-center gap-1.5 text-xs font-medium py-1.5 rounded-md transition-colors ${
-                    isActive ? "bg-gray-700 text-white shadow" : "text-gray-400 hover:text-gray-200"
+                    isActive
+                      ? "bg-gray-700 text-white shadow"
+                      : "text-gray-400 hover:text-gray-200"
                   }`}
                 >
                   <Icon className="h-3.5 w-3.5" />
@@ -358,7 +442,9 @@ export default function AIOpsDashboard() {
                   {count > 0 && (
                     <span
                       className={`ml-0.5 px-1.5 rounded-full text-[10px] leading-4 ${
-                        tab.id === "alerts" ? "bg-rose-500/80 text-white" : "bg-gray-600 text-gray-200"
+                        tab.id === "alerts"
+                          ? "bg-rose-500/80 text-white"
+                          : "bg-gray-600 text-gray-200"
                       }`}
                     >
                       {count}
@@ -376,9 +462,15 @@ export default function AIOpsDashboard() {
             <div className="p-3 rounded border border-dashed border-gray-600 bg-gray-900/60 flex items-center gap-2.5">
               <span className="h-2 w-2 rounded-full bg-gray-400 animate-ping shrink-0" />
               <p className="text-xs text-gray-400">
-                <span className="text-gray-200 font-medium">{pendingScenario.label}</span> is running against the
-                backend — waiting for Prometheus to scrape and Alertmanager to fire{" "}
-                <span className="font-mono text-gray-300">{pendingScenario.expectedAlertName}</span>.
+                <span className="text-gray-200 font-medium">
+                  {pendingScenario.label}
+                </span>{" "}
+                is running against the backend — waiting for Prometheus to
+                scrape and Alertmanager to fire{" "}
+                <span className="font-mono text-gray-300">
+                  {pendingScenario.expectedAlertName}
+                </span>
+                .
               </p>
             </div>
           )}
@@ -391,7 +483,10 @@ export default function AIOpsDashboard() {
                 const thread = threadForAlert(alert);
                 return (
                   <div
-                    key={alert.fingerprint || `${alert.alertname}-${alert.startsAt}`}
+                    key={
+                      alert.fingerprint ||
+                      `${alert.alertname}-${alert.startsAt}`
+                    }
                     className="p-3 rounded border border-gray-600 bg-gray-900/40"
                   >
                     <div className="flex justify-between items-start gap-2">
@@ -401,28 +496,39 @@ export default function AIOpsDashboard() {
                             alert.status === "firing" ? "animate-pulse" : ""
                           }`}
                         />
-                        <span className="font-semibold text-gray-100 truncate text-sm">{alert.alertname}</span>
+                        <span className="font-semibold text-gray-100 truncate text-sm">
+                          {alert.alertname}
+                        </span>
                       </span>
                       <span
                         className={`text-[10px] px-2 py-0.5 rounded-full shrink-0 uppercase tracking-wide ${
-                          alert.status === "firing" ? "bg-rose-500/20 text-rose-300" : "bg-gray-700 text-gray-400"
+                          alert.status === "firing"
+                            ? "bg-rose-500/20 text-rose-300"
+                            : "bg-gray-700 text-gray-400"
                         }`}
                       >
                         {alert.status}
                       </span>
                     </div>
-                    <p className="text-xs text-gray-400 pl-3.5 mt-1">{alert.pod || alert.namespace}</p>
+                    <p className="text-xs text-gray-400 pl-3.5 mt-1">
+                      {alert.pod || alert.namespace}
+                    </p>
                     <div className="flex justify-between items-center mt-2 pl-3.5">
-                      <span className="text-[11px] text-gray-500">{relativeTime(alert.startsAt)}</span>
+                      <span className="text-[11px] text-gray-500">
+                        {relativeTime(alert.startsAt)}
+                      </span>
                       {thread ? (
                         <button
                           onClick={() => goToThread(thread)}
                           className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1"
                         >
-                          View investigation <ArrowUpRight className="h-3 w-3" />
+                          View investigation{" "}
+                          <ArrowUpRight className="h-3 w-3" />
                         </button>
                       ) : (
-                        <span className="text-[11px] text-gray-600 italic">Awaiting pickup</span>
+                        <span className="text-[11px] text-gray-600 italic">
+                          Awaiting pickup
+                        </span>
                       )}
                     </div>
                   </div>
@@ -437,19 +543,26 @@ export default function AIOpsDashboard() {
             ) : (
               activeInvestigations.map((incident) => {
                 const accent = accentForAlert(incident.alert_name);
-                const isSelected = selectedThread?.thread_id === incident.thread_id;
+                const isSelected =
+                  selectedThread?.thread_id === incident.thread_id;
                 return (
                   <div
                     key={incident.thread_id}
                     onClick={() => setSelectedThread(incident)}
                     className={`p-3 rounded cursor-pointer border transition-colors ${
-                      isSelected ? "border-blue-500 bg-gray-700" : "border-gray-600 hover:bg-gray-750"
+                      isSelected
+                        ? "border-blue-500 bg-gray-700"
+                        : "border-gray-600 hover:bg-gray-750"
                     }`}
                   >
                     <div className="flex justify-between items-center mb-1 gap-2">
                       <span className="flex items-center gap-2 min-w-0">
-                        <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${accent.dot}`} />
-                        <span className="font-semibold text-gray-100 truncate">{incident.alert_name}</span>
+                        <span
+                          className={`h-1.5 w-1.5 rounded-full shrink-0 ${accent.dot}`}
+                        />
+                        <span className="font-semibold text-gray-100 truncate">
+                          {incident.alert_name}
+                        </span>
                       </span>
                       {incident.status === "paused" && (
                         <span className="px-2 py-1 text-xs bg-yellow-600 text-white rounded animate-pulse shrink-0">
@@ -457,10 +570,14 @@ export default function AIOpsDashboard() {
                         </span>
                       )}
                       {incident.status === "executing" && (
-                        <span className="px-2 py-1 text-xs bg-blue-600 text-white rounded shrink-0">Executing</span>
+                        <span className="px-2 py-1 text-xs bg-blue-600 text-white rounded shrink-0">
+                          Executing
+                        </span>
                       )}
                     </div>
-                    <p className="text-sm text-gray-400 pl-3.5">Target: {incident.target_resource}</p>
+                    <p className="text-sm text-gray-400 pl-3.5">
+                      Target: {incident.target_resource}
+                    </p>
                   </div>
                 );
               })
@@ -473,20 +590,29 @@ export default function AIOpsDashboard() {
             ) : (
               historyIncidents.map((incident) => {
                 const accent = accentForAlert(incident.alert_name);
-                const isSelected = selectedThread?.thread_id === incident.thread_id;
-                const wasResolved = incident.status === "resolved" && incident.verification_passed;
+                const isSelected =
+                  selectedThread?.thread_id === incident.thread_id;
+                const wasResolved =
+                  incident.status === "resolved" &&
+                  incident.verification_passed;
                 return (
                   <div
                     key={incident.thread_id}
                     onClick={() => setSelectedThread(incident)}
                     className={`p-3 rounded cursor-pointer border transition-colors ${
-                      isSelected ? "border-blue-500 bg-gray-700" : "border-gray-600 hover:bg-gray-750"
+                      isSelected
+                        ? "border-blue-500 bg-gray-700"
+                        : "border-gray-600 hover:bg-gray-750"
                     }`}
                   >
                     <div className="flex justify-between items-center mb-1 gap-2">
                       <span className="flex items-center gap-2 min-w-0">
-                        <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${accent.dot}`} />
-                        <span className="font-semibold text-gray-100 truncate">{incident.alert_name}</span>
+                        <span
+                          className={`h-1.5 w-1.5 rounded-full shrink-0 ${accent.dot}`}
+                        />
+                        <span className="font-semibold text-gray-100 truncate">
+                          {incident.alert_name}
+                        </span>
                       </span>
                       {wasResolved ? (
                         <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
@@ -494,7 +620,9 @@ export default function AIOpsDashboard() {
                         <XOctagon className="h-3.5 w-3.5 text-gray-500 shrink-0" />
                       )}
                     </div>
-                    <p className="text-sm text-gray-400 pl-3.5">Target: {incident.target_resource}</p>
+                    <p className="text-sm text-gray-400 pl-3.5">
+                      Target: {incident.target_resource}
+                    </p>
                     <div className="flex items-center gap-3 mt-2 pl-3.5">
                       {incident.post_mortem_md && (
                         <span className="text-[11px] text-gray-500 flex items-center gap-1">
@@ -525,15 +653,20 @@ export default function AIOpsDashboard() {
         {selectedThread ? (
           <>
             <div className="p-4 border-b border-gray-700 bg-gray-800 flex justify-between items-center">
-              <h3 className="font-bold text-xl text-white">Incident Trace: {selectedThread.alert_name}</h3>
-              <span className="text-xs text-gray-500 font-mono">Thread: {selectedThread.thread_id}</span>
+              <h3 className="font-bold text-xl text-white">
+                Incident Trace: {selectedThread.alert_name}
+              </h3>
+              <span className="text-xs text-gray-500 font-mono">
+                Thread: {selectedThread.thread_id}
+              </span>
             </div>
 
             <div className="flex-1 p-4 overflow-y-auto font-mono text-sm space-y-4 bg-black">
               {selectedThread.context_gathered && (
                 <div className="border border-gray-700 bg-gray-900 rounded p-3 shadow-md">
                   <h4 className="text-blue-400 font-bold mb-2 flex items-center text-xs">
-                    <Search className="mr-2 h-4 w-4" /> Agent Investigation Findings
+                    <Search className="mr-2 h-4 w-4" /> Agent Investigation
+                    Findings
                   </h4>
                   <pre className="whitespace-pre-wrap text-gray-300 text-xs border-l-2 border-blue-500 pl-3">
                     {selectedThread.context_gathered}
@@ -541,41 +674,56 @@ export default function AIOpsDashboard() {
                 </div>
               )}
 
-              {selectedThread.detailed_plan && selectedThread.detailed_plan.length > 0 && (
-                <div className="border border-indigo-700 bg-indigo-900/20 rounded p-3 mt-4 shadow-md">
-                  <h4 className="text-indigo-400 font-bold mb-3 flex items-center text-xs">
-                    <ShieldCheck className="mr-2 h-4 w-4" /> Proposed Remediation Plan
-                  </h4>
-                  <div className="space-y-3">
-                    {selectedThread.detailed_plan.map((action, idx) => (
-                      <div key={idx} className="bg-gray-800 p-3 rounded border border-gray-700 shadow-sm">
-                        <div className="font-bold text-red-400 text-sm">
-                          <span className="text-gray-400">Action:</span> {action.action}{" "}
-                          <span className="text-gray-400 font-normal">on</span> {action.target}
+              {selectedThread.detailed_plan &&
+                selectedThread.detailed_plan.length > 0 && (
+                  <div className="border border-indigo-700 bg-indigo-900/20 rounded p-3 mt-4 shadow-md">
+                    <h4 className="text-indigo-400 font-bold mb-3 flex items-center text-xs">
+                      <ShieldCheck className="mr-2 h-4 w-4" /> Proposed
+                      Remediation Plan
+                    </h4>
+                    <div className="space-y-3">
+                      {selectedThread.detailed_plan.map((action, idx) => (
+                        <div
+                          key={idx}
+                          className="bg-gray-800 p-3 rounded border border-gray-700 shadow-sm"
+                        >
+                          <div className="font-bold text-red-400 text-sm">
+                            <span className="text-gray-400">Action:</span>{" "}
+                            {action.action}{" "}
+                            <span className="text-gray-400 font-normal">
+                              on
+                            </span>{" "}
+                            {action.target}
+                          </div>
+                          <div className="text-gray-300 text-xs mt-2 italic bg-gray-900 p-2 rounded">
+                            "{action.reasoning}"
+                          </div>
                         </div>
-                        <div className="text-gray-300 text-xs mt-2 italic bg-gray-900 p-2 rounded">
-                          "{action.reasoning}"
-                        </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
 
               {selectedThread.post_mortem_md && (
                 <div className="border border-emerald-700 bg-emerald-900/10 rounded p-3 mt-4 shadow-md">
                   <h4 className="text-emerald-400 font-bold mb-2 flex items-center text-xs">
                     <FileText className="mr-2 h-4 w-4" /> Post-Mortem
                   </h4>
-                  <pre className="whitespace-pre-wrap text-gray-300 text-xs">{selectedThread.post_mortem_md}</pre>
+                  <pre className="whitespace-pre-wrap text-gray-300 text-xs">
+                    {selectedThread.post_mortem_md}
+                  </pre>
                 </div>
               )}
 
               <div className="space-y-2 mt-6 p-2 rounded">
                 {selectedThread.logs?.map((log, index) => (
                   <div key={index} className="text-gray-400">
-                    <span className="text-green-500 mr-2">[{log.timestamp}]</span>
-                    <span className="text-blue-400 mr-2">[{log.node_name}]</span>
+                    <span className="text-green-500 mr-2">
+                      [{log.timestamp}]
+                    </span>
+                    <span className="text-blue-400 mr-2">
+                      [{log.node_name}]
+                    </span>
                     <span className="text-gray-300">{log.message}</span>
                   </div>
                 ))}
@@ -584,7 +732,9 @@ export default function AIOpsDashboard() {
 
             {selectedThread.status === "paused" && (
               <div className="p-4 border-t border-gray-700 bg-gray-800 shadow-xl z-10">
-                <p className="text-sm text-gray-300 mb-3 font-semibold">Do you approve this remediation plan?</p>
+                <p className="text-sm text-gray-300 mb-3 font-semibold">
+                  Do you approve this remediation plan?
+                </p>
                 <div className="flex gap-3 mb-3">
                   <button
                     onClick={() => submitHITLDecision("approve")}
@@ -605,7 +755,8 @@ export default function AIOpsDashboard() {
                     value={feedbackInput}
                     onChange={(e) => setFeedbackInput(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter" && feedbackInput.trim()) submitHITLDecision("feedback");
+                      if (e.key === "Enter" && feedbackInput.trim())
+                        submitHITLDecision("feedback");
                     }}
                     placeholder="Or instruct the agent to change the plan (e.g., 'Don't delete pod, just increase memory')"
                     className="flex-1 bg-gray-900 border border-gray-600 rounded px-3 py-2 text-white focus:outline-none focus:border-blue-500 text-sm"
@@ -624,7 +775,9 @@ export default function AIOpsDashboard() {
         ) : (
           <div className="flex-1 flex flex-col justify-center items-center text-gray-500 bg-gray-900">
             <Terminal className="h-16 w-16 mb-4 opacity-30" />
-            <p>Select an alert or investigation from the left to view its trace.</p>
+            <p>
+              Select an alert or investigation from the left to view its trace.
+            </p>
           </div>
         )}
       </div>
@@ -633,5 +786,7 @@ export default function AIOpsDashboard() {
 }
 
 function EmptyState({ text }) {
-  return <div className="text-center text-gray-500 text-sm mt-12 px-4">{text}</div>;
+  return (
+    <div className="text-center text-gray-500 text-sm mt-12 px-4">{text}</div>
+  );
 }

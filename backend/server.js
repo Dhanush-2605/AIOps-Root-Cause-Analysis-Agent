@@ -329,8 +329,8 @@ app.post('/admin/requests/abort', (req, res) => {
 
 // SCENARIO Genuine Memory Demand (bounded cache, scales with load, plateaus)
 
-const MAX_CACHE_ENTRIES = 5000;
-const CACHE_ENTRY_SIZE_BYTES = 50 * 1024; // 50KB per entry — deliberately sized to be visible in metrics
+const MAX_CACHE_ENTRIES = 2000;
+const CACHE_ENTRY_SIZE_BYTES = 900 * 1024; // 50KB per entry — deliberately sized to be visible in metrics
 const requestCache = new Map();
 
 function evictOldest(maxEntries) {
@@ -343,11 +343,13 @@ function evictOldest(maxEntries) {
 // Periodic TTL sweep — entries older than 20s get evicted regardless of cache size,
 // so memory comes back down once load drops (this is what makes it "genuine
 // demand" rather than a leak — it's load-correlated in both directions)
+const CACHE_TTL_MS = 45000;
+
 setInterval(() => {
     const now = Date.now();
     let evicted = 0;
     for (const [key, entry] of requestCache.entries()) {
-        if (now - entry.createdAt > 20000) {
+        if (now - entry.createdAt > CACHE_TTL_MS) {
             requestCache.delete(key);
             evicted++;
         }
