@@ -42,20 +42,29 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: backend-sa
+  namespace: default
   annotations:
-    # The Workload Identity Bridge to Google Cloud
-    iam.gke.io/gcp-service-account: "backend-db-accessor@core-appliance-338915.iam.gserviceaccount.com"
+    # The Workload Identity Bridge to Azure Managed Identity
+    azure.workload.identity/client-id: "6695b889-efa8-498a-9d91-04c84a03235e"
 ---
 apiVersion: secrets-store.csi.x-k8s.io/v1
 kind: SecretProviderClass
 metadata:
-  name: gcp-db-credentials
+  name: azure-kv-provider
+  namespace: default
 spec:
-  provider: gke
+  provider: azure
   parameters:
-    secrets: |
-      - resourceName: "projects/core-appliance-338915/secrets/db-password/versions/latest"
-        path: "db-password.txt"
+    usePodIdentity: "false"
+    useVMManagedIdentity: "false"
+    clientID: "6695b889-efa8-498a-9d91-04c84a03235e"
+    keyvaultName: "kv-doom-secrets1"
+    tenantId: "460e9a4b-7c0a-4b4f-8241-502b2cb1f3c4"
+    objects: |
+      array:
+        - |
+          objectName: db-password
+          objectType: secret
 ---
 # ==========================================
 # TIER 3: DATABASE (PostgreSQL)
@@ -267,6 +276,7 @@ spec:
     metadata:
       labels:
         app: backend
+        azure.workload.identity/use: "true"
     spec:
       serviceAccountName: backend-sa # <--- Wears the exact same ID badge
       containers:
@@ -278,8 +288,8 @@ spec:
         - configMapRef:
             name: app-config         # <--- Pulls the host routing data
         volumeMounts:
-        - mountPath: /mnt/secrets    # <--- Mounts the exact same GCP secret file
-          name: gcp-secret-volume
+        - mountPath: /mnt/secrets    # <--- Mounts the exact same  secret file
+          name: secret-volume
           readOnly: true
         resources:
           requests:
@@ -290,12 +300,12 @@ spec:
             cpu: "300m"
        
       volumes:
-      - name: gcp-secret-volume
-        csi:
-          driver: secrets-store-gke.csi.k8s.io
+      - name: secret-volume
+        csi:   
+          driver: secrets-store.csi.k8s.io
           readOnly: true
           volumeAttributes:
-            secretProviderClass: "gcp-db-credentials"
+            secretProviderClass: "azure-kv-provider"
 ---
 apiVersion: v1
 kind: Service
