@@ -62,6 +62,8 @@ kubeStateMetrics:
 kubelet:
   enabled: true
   namespace: monitoring 
+  serviceMonitor:
+    cAdvisor: true
 
 
 grafana:

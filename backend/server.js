@@ -330,7 +330,7 @@ app.post('/admin/requests/abort', (req, res) => {
 // SCENARIO Genuine Memory Demand (bounded cache, scales with load, plateaus)
 
 const MAX_CACHE_ENTRIES = 2000;
-const CACHE_ENTRY_SIZE_BYTES = 900 * 1024; // 50KB per entry — deliberately sized to be visible in metrics
+const CACHE_ENTRY_SIZE_BYTES = 1024 * 1024; // 50KB per entry — deliberately sized to be visible in metrics
 const requestCache = new Map();
 
 function evictOldest(maxEntries) {

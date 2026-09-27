@@ -50,7 +50,7 @@ async function fireStaggeredBurst(
   url,
   totalCount,
   bodyFn,
-  { batchSize = 20, intervalMs = 750 } = {},
+  { batchSize = 20, intervalMs = 1500 } = {},
 ) {
   let sent = 0;
   while (sent < totalCount) {
@@ -135,7 +135,7 @@ const SCENARIOS = [
         `${NODE_BASE_URL}/api/catalog/lookup`,
         400,
         (i) => ({ itemId: i % 4000 }),
-        { batchSize: 20, intervalMs: 750 },
+        { batchSize: 20, intervalMs: 1500 },
       );
     },
   },
@@ -155,7 +155,7 @@ const SCENARIOS = [
       );
     },
   },
-  
+
   {
     id: "memory-leak",
     label: "Memory Leak",
