@@ -61,7 +61,10 @@ async function fireStaggeredBurst(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(bodyFn ? bodyFn(idx) : {}),
-      }).catch(() => {});
+      }).catch((err) => {
+        // DO NOT swallow this error! If top shows 50mb, this is likely firing.
+        console.error(`Request failed: ${err.message}`);
+      });
     });
     await Promise.allSettled(requests);
     sent += thisBatch;
@@ -133,9 +136,9 @@ const SCENARIOS = [
       // real data to fire on, not just a blip between scrapes.
       await fireStaggeredBurst(
         `${NODE_BASE_URL}/api/catalog/lookup`,
-        400,
+        420,
         (i) => ({ itemId: i % 4000 }),
-        { batchSize: 20, intervalMs: 1500 },
+        { batchSize: 20, intervalMs: 1000 },
       );
     },
   },

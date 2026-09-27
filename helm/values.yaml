@@ -61,7 +61,7 @@ kubeStateMetrics:
 
 kubelet:
   enabled: true
-  namespace: monitoring 
+  namespace: kube-system
   serviceMonitor:
     cAdvisor: true
 

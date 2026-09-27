@@ -343,8 +343,9 @@ function evictOldest(maxEntries) {
 // Periodic TTL sweep — entries older than 20s get evicted regardless of cache size,
 // so memory comes back down once load drops (this is what makes it "genuine
 // demand" rather than a leak — it's load-correlated in both directions)
-const CACHE_TTL_MS = 45000;
+const CACHE_TTL_MS = 120000;
 
+    
 setInterval(() => {
     const now = Date.now();
     let evicted = 0;
