@@ -23,7 +23,14 @@ import {
 
 // The Node.js backend under test — NOT the Python agent (that's :8080,
 // used only for /alert, /alerts, /incidents, /approve below).
-const NODE_BASE_URL = "http://localhost:3000";
+// Both backends are reached through nginx as relative paths, not absolute
+// localhost URLs — the browser loads this dashboard from wherever it's
+// deployed (e.g. http://20.204.243.24), and "localhost" there means the
+// visitor's own machine, not the cluster. nginx forwards /api/* to the
+// Node.js backend as-is (routes already start with /api/...), and /agent/*
+// to the Python agent with that prefix stripped (see nginx.conf).
+const NODE_BASE_URL = ""; // scenario run() calls already include the /api/... prefix
+const AGENT_BASE_URL = "/agent";
 
 // Fires `count` concurrent POSTs without waiting for each one sequentially —
 // needed to actually push memory/cache metrics far enough to cross a
@@ -165,7 +172,7 @@ export default function AIOpsDashboard() {
   useEffect(() => {
     const fetchIncidents = async () => {
       try {
-        const response = await fetch("http://localhost:8080/incidents");
+        const response = await fetch(`${AGENT_BASE_URL}/incidents`);
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         setIncidents(data.active_threads || []);
@@ -178,7 +185,7 @@ export default function AIOpsDashboard() {
     // investigation being spun up for it.
     const fetchAlerts = async () => {
       try {
-        const response = await fetch("http://localhost:8080/alerts");
+        const response = await fetch(`${AGENT_BASE_URL}/alerts`);
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         setAlerts(data.alerts || []);
@@ -265,7 +272,7 @@ export default function AIOpsDashboard() {
       feedback: decision === "feedback" ? feedbackInput : "",
     };
     try {
-      await fetch("http://localhost:8080/approve", {
+      await fetch(`${AGENT_BASE_URL}/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
