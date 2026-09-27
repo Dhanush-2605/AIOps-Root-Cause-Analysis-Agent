@@ -19,12 +19,11 @@ resource "azurerm_role_assignment" "backend_secret_access" {
 # The cryptographic binding linking the Kubernetes ServiceAccount to the Azure identity
 # (equivalent to google_service_account_iam_member workload identity binding)
 resource "azurerm_federated_identity_credential" "pod_workload_identity_binding" {
-  name                = "backend-pod-federation"
-  resource_group_name = azurerm_resource_group.main.name
-  audience            = ["api://AzureADTokenExchange"]
-  issuer              = azurerm_kubernetes_cluster.primary.oidc_issuer_url
-  parent_id           = azurerm_user_assigned_identity.backend_identity.id
-  subject             = "system:serviceaccount:default:backend-sa"
+  name                      = "backend-pod-federation"
+  user_assigned_identity_id = azurerm_user_assigned_identity.backend_identity.id
+  audience                  = ["api://AzureADTokenExchange"]
+  issuer                    = azurerm_kubernetes_cluster.primary.oidc_issuer_url
+  subject                   = "system:serviceaccount:default:backend-sa"
 }
 
 # ==========================================================================
@@ -57,15 +56,22 @@ resource "azurerm_role_assignment" "pipeline_roles" {
 # 3. Federated credential connecting GitHub's OIDC token to the Azure identity
 #    (equivalent to the Workload Identity Pool + Provider + binding trio in GCP)
 resource "azurerm_federated_identity_credential" "github_sa_binding" {
-  name                = "github-actions-federation"
-  resource_group_name = azurerm_resource_group.main.name
-  audience            = ["api://AzureADTokenExchange"]
-  issuer              = "https://token.actions.githubusercontent.com"
-  parent_id           = azurerm_user_assigned_identity.github_actions_identity.id
+  name                      = "github-actions-federation"
+  user_assigned_identity_id = azurerm_user_assigned_identity.github_actions_identity.id
+  audience                  = ["api://AzureADTokenExchange"]
+  issuer                    = "https://token.actions.githubusercontent.com"
+  subject                   = "repo:${var.github_repo}:ref:refs/heads/main"
+}
 
-  # Restrict to your specific repo + branch — adjust the ref, or use
-  # "repo:${var.github_repo}:pull_request" / ":environment:prod" for other trigger types
-  subject = "repo:${var.github_repo}:ref:refs/heads/main"
+
+# 1. Fetch details of the identity executing Terraform
+data "azurerm_client_config" "current_config" {}
+
+# 2. Grant the Terraform executor rights to create/read Key Vault secrets
+resource "azurerm_role_assignment" "tf_executor_kv_access" {
+  scope                = azurerm_key_vault.main.id
+  role_definition_name = "Key Vault Secrets Officer"
+  principal_id         = data.azurerm_client_config.current_config.object_id
 }
 
 # ==========================================================================

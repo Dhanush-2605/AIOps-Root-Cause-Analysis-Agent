@@ -11,7 +11,8 @@ variable "tenant_id" {
 variable "location" {
   description = "Azure region (equivalent to GCP var.region)"
   type        = string
-  default     = "eastus"
+  default     = "centralindia"
+  
 }
 
 variable "resource_group_name" {

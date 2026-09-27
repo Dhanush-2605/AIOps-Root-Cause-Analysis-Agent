@@ -17,13 +17,18 @@ metadata:
 spec:
   groups:
   - name: chaos-engineering-alerts
+  
     rules:
-    - alert: HighMemoryUsage
-      expr: sum(container_memory_working_set_bytes{container!="POD", container!=""}) by (pod) / sum(container_spec_memory_limit_bytes{container!=""}) by (pod) > 0.90
+    - alert: PodMemoryNearLimit
+      expr: |
+          (container_memory_working_set_bytes{container!="", container!="POD"}
+          / on(pod, namespace, container) kube_pod_container_resource_limits{resource="memory"}) > 0.85
       for: 1m
-      labels: { severity: critical }
+      labels:
+          severity: warning
       annotations:
-        summary: "Pod {{ $labels.pod }} is about to run out of memory."
+          summary: "Pod {{ $labels.pod }} memory usage above 85% of its limit"
+          description: "Investigate whether this is genuine load-driven demand or a leak before scaling limits."
 
     - alert: PodCrashLooping
       expr: rate(kube_pod_container_status_restarts_total[5m]) * 300 > 3

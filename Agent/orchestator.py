@@ -434,7 +434,7 @@ def executor_node(state: AgentState):
 
             elif action_type == "abort_hanging_requests":
                 threshold = val or "30"
-                exec_cmd = ["curl", "-s", "-X", "POST", f"http://127.0.0.1:8080/admin/requests/abort?threshold={threshold}"]
+                exec_cmd = ["curl", "-s", "-X", "POST", f"http://127.0.0.1:3000/admin/requests/abort?threshold={threshold}"]
                 resp = stream(
                     v1_api.connect_get_namespaced_pod_exec,
                     name=target_name, namespace=namespace, command=exec_cmd,

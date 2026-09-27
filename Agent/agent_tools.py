@@ -15,7 +15,7 @@ import google.auth
 import google.auth.transport.requests
 
 
-BACKEND_ADMIN_URL = os.environ.get("BACKEND_ADMIN_URL", "http://backend-service:8080")
+BACKEND_ADMIN_URL = os.environ.get("BACKEND_ADMIN_URL", "http://backend-service:3000")
 PROM_URL = os.environ.get("PROM_URL", "http://prometheus-service:9090")
 
 

@@ -12,9 +12,9 @@ env:
   CLUSTER_NAME: aks-production-cluster
   # These three come straight from your `terraform output` (workload_identity_client_id,
   # tenant_id, subscription_id). Store them as repo secrets, not plain env vars.
-  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  AZURE_CLIENT_ID: 56e10af1-702c-45b1-b5e3-108416c612da
+  AZURE_TENANT_ID: 460e9a4b-7c0a-4b4f-8241-502b2cb1f3c4
+  AZURE_SUBSCRIPTION_ID: b0c6c5be-d932-4a5f-b398-0b1261b5820a
 
 jobs:
   build-and-deploy:

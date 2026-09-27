@@ -309,8 +309,8 @@ spec:
     app: backend
   ports:
   - name: http-metrics
-    port: 8080
-    targetPort: 8080
+    port: 3000
+    targetPort: 3000
     protocol: TCP
 ---
 # ==========================================
@@ -360,44 +360,44 @@ spec:
 # ==========================================
 # 4. THE SHOCK ABSORBER: Redis Message Queue
 # ==========================================
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: redis-queue
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: redis
-  template:
-    metadata:
-      labels:
-        app: redis
-    spec:
-      containers:
-      - name: redis
-        image: redis:7-alpine
-        ports:
-        - containerPort: 6379
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "50m"
-          limits:
-            memory: "256Mi"
-            cpu: "200m"
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: redis-queue
+# spec:
+#   replicas: 1
+#   selector:
+#     matchLabels:
+#       app: redis
+#   template:
+#     metadata:
+#       labels:
+#         app: redis
+#     spec:
+#       containers:
+#       - name: redis
+#         image: redis:7-alpine
+#         ports:
+#         - containerPort: 6379
+#         resources:
+#           requests:
+#             memory: "128Mi"
+#             cpu: "50m"
+#           limits:
+#             memory: "256Mi"
+#             cpu: "200m"
        
 
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis-service
-spec:
-  ports:
-  - port: 6379
-  selector:
-    app: redis
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: redis-service
+# spec:
+#   ports:
+#   - port: 6379
+#   selector:
+#     app: redis
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -372,7 +372,48 @@ app.post('/api/catalog/lookup', (req, res) => {
     res.json({ status: "success", item_id: itemId, cache_size: requestCache.size });
 });
 
+
+
+// SCENARIO D: Memory Leak (unbounded growth, independent of load, never released)
+const leakedBuffers = []; // intentionally never cleared — this IS the leak
+
+app.post('/api/reports/export', (req, res) => {
+    const { reportId = Math.floor(Math.random() * 100000) } = req.body;
+
+    // simulate holding onto a generated report "for caching" but never releasing it —
+    // classic leak pattern: looks like normal caching code, just missing any eviction
+    const reportBuffer = Buffer.alloc(100 * 1024, 'r'); // 100KB per call
+    leakedBuffers.push({ reportId, reportBuffer, createdAt: Date.now() });
+
+    logger.info("Report export generated", { endpoint: "/api/reports/export", report_id: reportId, total_exports: leakedBuffers.length });
+    res.json({ status: "success", report_id: reportId });
+});
+
+
+const memoryUsageGauge = new promClient.Gauge({
+    name: 'nodejs_process_memory_bytes',
+    help: 'Current Node.js process memory usage (RSS)',
+    registers: [register]
+});
+
+const cacheEntriesGauge = new promClient.Gauge({
+    name: 'app_bounded_cache_entries',
+    help: 'Current entries in the bounded request cache (Scenario C)',
+    registers: [register]
+});
+
+const leakedBuffersGauge = new promClient.Gauge({
+    name: 'app_unbounded_buffers_total',
+    help: 'Total buffers accumulated with no eviction (Scenario D)',
+    registers: [register]
+});
+
+setInterval(() => {
+    memoryUsageGauge.set(process.memoryUsage().rss);
+    cacheEntriesGauge.set(requestCache.size);
+    leakedBuffersGauge.set(leakedBuffers.length);
+}, 5000);
 // ==========================================
 // 5. START SERVER
 // ==========================================
-app.listen(8080, () => logger.info("Backend API started", { port: 8080, environment: "production" }));
+app.listen(3000, () => logger.info("Backend API started", { port: 3000, environment: "production" }));
