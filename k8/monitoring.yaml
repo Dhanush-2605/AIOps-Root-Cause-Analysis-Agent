@@ -23,7 +23,7 @@ spec:
     - alert: PodMemoryNearLimit
       expr: |
           (container_memory_working_set_bytes{container!="", container!="POD"}
-          / on(pod, namespace, container) kube_pod_container_resource_limits{resource="memory"}) > 0.85
+          / on(pod, namespace, container) kube_pod_container_resource_limits{resource="memory"}) > 0.7
       for: 1m
       labels:
           severity: warning
