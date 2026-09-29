@@ -7,4 +7,5 @@ terraform.tfstate.backup
 secrets.tfvars
 terraform.tfvars
 .env
+venv
 __pycache__

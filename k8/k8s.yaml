@@ -65,6 +65,9 @@ spec:
         - |
           objectName: db-password
           objectType: secret
+        - |
+          objectName: app-env
+          objectType: secret
 ---
 # ==========================================
 # TIER 3: DATABASE (PostgreSQL)

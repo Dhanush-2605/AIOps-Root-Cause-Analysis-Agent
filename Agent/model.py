@@ -18,4 +18,4 @@ llm = ChatGroq(
 )
 
 
-# print(llm.invoke("Will thor Defeat DOOM in secret wars?"))  
+print(llm.invoke("Will thor Defeat DOOM in secret wars?"))  
