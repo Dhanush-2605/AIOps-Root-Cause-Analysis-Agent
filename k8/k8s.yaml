@@ -68,6 +68,20 @@ spec:
         - |
           objectName: app-env
           objectType: secret
+        - |
+          objectName: github-token            # 1. Fetch secret from Azure Key Vault
+          objectType: secret
+
+  secretObjects:
+  - secretName: agent-kv-secrets
+    type: Opaque
+    data:
+    - key: DB_PASSWORD
+      objectName: db-password
+    - key: GROQ_API_KEY                     # <--- 2. Maps to process environment variable name
+      objectName: groq-api-ke
+    - key: GITHUB_TOKEN                      # 2. Expose as env variable GITHUB_TOKEN
+      objectName: github-token
 ---
 # ==========================================
 # TIER 3: DATABASE (PostgreSQL)
@@ -444,6 +458,23 @@ spec:
           limits:
             memory: "2Gi"
             cpu: "1000m"
+            
+        envFrom:
+        - secretRef:
+            name: agent-kv-secrets
+        # 4. CSI Volume Mount (Mandatory for Key Vault fetch to trigger on pod startup)
+        volumeMounts:
+        - name: secrets-store-inline
+          mountPath: "/mnt/secrets-store"
+          readOnly: true
+      # 5. Define CSI Volume referencing the SecretProviderClass
+      volumes:
+      - name: secrets-store-inline
+        csi:
+          driver: secrets-store.csi.x-k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: "azure-kv-provider"
 ---
 apiVersion: v1
 kind: Service
