@@ -56,7 +56,8 @@ spec:
   provider: azure
   parameters:
     usePodIdentity: "false"
-    useVMManagedIdentity: "false"
+    useVMManagedIdentity: "true"
+    userAssignedIdentityID: "5cd6ea91-933c-43fe-ade6-0d348d861506"
     clientID: "6695b889-efa8-498a-9d91-04c84a03235e"
     keyvaultName: "kv-doom-secrets1"
     tenantId: "460e9a4b-7c0a-4b4f-8241-502b2cb1f3c4"
