@@ -64,25 +64,11 @@ spec:
     objects: |
       array:
         - |
-          objectName: db-password
-          objectType: secret
-        - |
           objectName: app-env
           objectType: secret
-        - |
-          objectName: github-token            # 1. Fetch secret from Azure Key Vault
-          objectType: secret
+      
 
-  secretObjects:
-  - secretName: agent-kv-secrets
-    type: Opaque
-    data:
-    - key: DB_PASSWORD
-      objectName: db-password
-    - key: GROQ_API_KEY                     # <--- 2. Maps to process environment variable name
-      objectName: groq-api-ke
-    - key: GITHUB_TOKEN                      # 2. Expose as env variable GITHUB_TOKEN
-      objectName: github-token
+
 ---
 # ==========================================
 # TIER 3: DATABASE (PostgreSQL)

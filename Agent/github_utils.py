@@ -3,7 +3,9 @@ from datetime import datetime, timezone
 from github import Github, GithubException
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(dotenv_path="/mnt/secrets-store/app-env")
+
+
 
 def commit_post_mortem_to_repo(
     post_mortem_content: str, 
@@ -13,7 +15,7 @@ def commit_post_mortem_to_repo(
     
     """Commits the Post-Mortem Markdown file directly to the repository's default branch."""
     github_token = os.getenv("GITHUB_TOKEN")
-    repo_name = os.getenv("GITHUB_REPO") 
+    repo_name = "Dhanush-2605/GCP_TEST"  
     print(github_token, repo_name)
     
     if not github_token or not repo_name:

@@ -6,7 +6,7 @@ from langchain_groq import ChatGroq
 from langgraph.graph import StateGraph, START, END
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(dotenv_path="/mnt/secrets-store/app-env")
 
 
 groq_key = os.getenv("GROQ_API_KEY")
