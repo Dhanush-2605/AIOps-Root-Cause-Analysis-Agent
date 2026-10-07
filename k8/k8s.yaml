@@ -22,42 +22,65 @@ data:
 # ==========================================
 # CONFIGURATIONS, SECRETS & IDENTITIES (NEW)
 # ==========================================
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: app-config
-data:
-  # Node.js now talks to the Proxy, NOT the database directly!
-  DB_HOST: "pgpool-service"
+  apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: app-config
+  data:
+    # Node.js now talks to the Proxy, NOT the database directly!
+    DB_HOST: "pgpool-service"
 
-  # We also tell Node.js where the Redis queue is
-  REDIS_HOST: "redis-service"
+    # We also tell Node.js where the Redis queue is
+    REDIS_HOST: "redis-service"
 
-  DB_USER: "postgres"
-  DB_NAME: "mytierdb"
-  POSTGRES_USER: "postgres"
-  POSTGRES_DB: "mytierdb"
+    DB_USER: "postgres"
+    DB_NAME: "mytierdb"
+    POSTGRES_USER: "postgres"
+    POSTGRES_DB: "mytierdb"
 ---
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: backend-sa
-  namespace: default
-  annotations:
-    # The Workload Identity Bridge to Azure Managed Identity
-    azure.workload.identity/client-id: "6695b889-efa8-498a-9d91-04c84a03235e"
+  apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    name: backend-sa
+    namespace: default
+    annotations:
+      # The Workload Identity Bridge to Azure Managed Identity
+      azure.workload.identity/client-id: "6695b889-efa8-498a-9d91-04c84a03235e"
 ---
+  apiVersion: secrets-store.csi.x-k8s.io/v1
+  kind: SecretProviderClass
+  metadata:
+    name: azure-kv-provider
+    namespace: default
+  spec:
+    provider: azure
+    parameters:
+      usePodIdentity: "false"
+      useVMManagedIdentity: "true"
+      userAssignedIdentityID: "5cd6ea91-933c-43fe-ade6-0d348d861506"
+      clientID: "6695b889-efa8-498a-9d91-04c84a03235e"
+      keyvaultName: "kv-doom-secrets1"
+      tenantId: "460e9a4b-7c0a-4b4f-8241-502b2cb1f3c4"
+      objects: |
+        array:
+          - |
+            objectName: app-env
+            objectType: secret
+
+---
+
+   
+# NEW: used only by node, postgres and pgpool (Workload Identity auth)
 apiVersion: secrets-store.csi.x-k8s.io/v1
 kind: SecretProviderClass
 metadata:
-  name: azure-kv-provider
+  name: azure-kv-db-provider
   namespace: default
 spec:
   provider: azure
   parameters:
     usePodIdentity: "false"
-    useVMManagedIdentity: "true"
-    userAssignedIdentityID: "5cd6ea91-933c-43fe-ade6-0d348d861506"
+    useVMManagedIdentity: "false"
     clientID: "6695b889-efa8-498a-9d91-04c84a03235e"
     keyvaultName: "kv-doom-secrets1"
     tenantId: "460e9a4b-7c0a-4b4f-8241-502b2cb1f3c4"
@@ -66,32 +89,50 @@ spec:
         - |
           objectName: app-env
           objectType: secret
-      
-
+        - |
+          objectName: pg-repl-password
+          objectType: secret
+          objectAlias: repl-password
+        - |
+          objectName: pgpool-admin-password
+          objectType: secret
+          objectAlias: pgpool-admin-password
 
 ---
-# ==========================================
-# TIER 3: DATABASE (PostgreSQL)
-# ==========================================
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: postgres-pvc
-spec:
-  accessModes: [ "ReadWriteOnce" ]
-  resources:
-    requests:
-      storage: 1Gi
----
-# ==========================================================================
-# PART 4: THE DATABASE CLUSTER (POSTGRESQL STATEFULSET)
-# ==========================================================================
+  # ==========================================
+  # TIER 3: DATABASE (PostgreSQL)
+  # ==========================================
+  # apiVersion: v1
+  # kind: PersistentVolumeClaim
+  # metadata:
+  #   name: postgres-pvc
+  # spec:
+  #   accessModes: [ "ReadWriteOnce" ]
+  #   resources:
+  #     requests:
+  #       storage: 1Gi
+# ---
+  # ==========================================================================
+  # PART 4: THE DATABASE CLUSTER (POSTGRESQL STATEFULSET)
+  # ==========================================================================
+#   apiVersion: v1
+#   kind: Service
+#   metadata:
+#     name: postgres-headless
+#   spec:
+#     clusterIP: None # Disables standard load balancing for direct Pod IP addressing
+#     ports:
+#     - port: 5432
+#     selector:
+#       app: postgres
+# ---
+
 apiVersion: v1
 kind: Service
 metadata:
   name: postgres-headless
 spec:
-  clusterIP: None # Disables standard load balancing for direct Pod IP addressing
+  clusterIP: None
   ports:
   - port: 5432
   selector:
@@ -103,7 +144,7 @@ metadata:
   name: postgres
 spec:
   serviceName: "postgres-headless"
-  replicas: 2 # Generates postgres-0 (Master) and postgres-1 (Replica)
+  replicas: 2   # postgres-0 = master, postgres-1 = replica
   selector:
     matchLabels:
       app: postgres
@@ -111,6 +152,7 @@ spec:
     metadata:
       labels:
         app: postgres
+        azure.workload.identity/use: "true"
     spec:
       serviceAccountName: backend-sa
       containers:
@@ -125,13 +167,20 @@ spec:
           limits:
             memory: "1Gi"
             cpu: "500m"
-       
-
-        # Dynamic Bootstrap Interceptor Script
         command:
           - /bin/bash
           - -c
           - |
+            SECRET_FILE=/mnt/secrets/app-env
+
+            # Works for both formats: DB_PASSWORD=xyz line OR raw password only
+            if grep -q '^DB_PASSWORD=' "$SECRET_FILE"; then
+              PW=`grep '^DB_PASSWORD=' "$SECRET_FILE" | head -1 | cut -d= -f2- | tr -d '"\r\n'`
+            else
+              PW=`tr -d '\r\n' < "$SECRET_FILE"`
+            fi
+            export POSTGRESQL_PASSWORD="$PW"
+
             if [[ "$HOSTNAME" == "postgres-0" ]]; then
               echo "Booting as MASTER: $HOSTNAME"
               export POSTGRESQL_REPLICATION_MODE="master"
@@ -142,40 +191,42 @@ spec:
               export POSTGRESQL_MASTER_PORT_NUMBER="5432"
             fi
 
-            # Exec pass-through back to the base entrypoint
             exec /opt/bitnami/scripts/postgresql/entrypoint.sh /opt/bitnami/scripts/postgresql/run.sh
-
         env:
         - name: POSTGRESQL_REPLICATION_USER
           value: "repl_user"
-        - name: POSTGRESQL_REPLICATION_PASSWORD
-          value: "repl_password123"
+        - name: POSTGRESQL_REPLICATION_PASSWORD_FILE
+          value: "/mnt/secrets/repl-password"
         - name: POSTGRESQL_DATABASE
           valueFrom:
             configMapKeyRef:
               name: app-config
               key: DB_NAME
-        - name: POSTGRESQL_PASSWORD_FILE
-          value: "/mnt/secrets/db-password.txt"
-
         volumeMounts:
-        - mountPath: /mnt/secrets
-          name: gcp-secret-volume
+        - name: secrets-store
+          mountPath: /mnt/secrets
           readOnly: true
+        - name: data
+          mountPath: /bitnami/postgresql
       volumes:
-      - name: gcp-secret-volume
+      - name: secrets-store
         csi:
-          driver: secrets-store-gke.csi.k8s.io
+          driver: secrets-store.csi.k8s.io
           readOnly: true
           volumeAttributes:
-            secretProviderClass: "gcp-db-credentials"
-      - name: postgres-init-volume
-        configMap:
-          name: postgres-init-script
+            secretProviderClass: "azure-kv-db-provider"
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi
 ---
-# ==========================================================================
-# PART 3: THE TRAFFIC COP (PGPOOL-II PROXY)
-# ==========================================================================
+  # ==========================================================================
+  # PART 3: THE TRAFFIC COP (PGPOOL-II PROXY)
+  # ==========================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -189,6 +240,7 @@ spec:
     metadata:
       labels:
         app: pgpool
+        azure.workload.identity/use: "true"
     spec:
       serviceAccountName: backend-sa
       containers:
@@ -203,66 +255,68 @@ spec:
           limits:
             memory: "512Mi"
             cpu: "300m"
-       
+        command:
+          - /bin/bash
+          - -c
+          - |
+            SECRET_FILE=/mnt/secrets/app-env
+
+            if grep -q '^DB_PASSWORD=' "$SECRET_FILE"; then
+              PW=`grep '^DB_PASSWORD=' "$SECRET_FILE" | head -1 | cut -d= -f2- | tr -d '"\r\n'`
+            else
+              PW=`tr -d '\r\n' < "$SECRET_FILE"`
+            fi
+            export PGPOOL_POSTGRES_PASSWORD="$PW"
+            export PGPOOL_SR_CHECK_PASSWORD="$PW"
+            export PGPOOL_HEALTH_CHECK_PASSWORD="$PW"
+
+            exec /opt/bitnami/scripts/pgpool/entrypoint.sh /opt/bitnami/scripts/pgpool/run.sh
         env:
-        # Backend mapping using the Headless service DNS structures
         - name: PGPOOL_BACKEND_NODES
           value: "0:postgres-0.postgres-headless:5432,1:postgres-1.postgres-headless:5432"
-
-        # Enable SQL parsing and Read/Write splitting
         - name: PGPOOL_ENABLE_LOAD_BALANCING
           value: "yes"
-
         - name: PGPOOL_POSTGRES_USERNAME
           valueFrom:
             configMapKeyRef:
               name: app-config
               key: POSTGRES_USER
-
         - name: PGPOOL_SR_CHECK_USER
           valueFrom:
             configMapKeyRef:
               name: app-config
               key: POSTGRES_USER
-        - name: PGPOOL_SR_CHECK_PASSWORD_FILE
-          value: "/mnt/secrets/db-password.txt"
-
         - name: PGPOOL_HEALTH_CHECK_USER
           valueFrom:
             configMapKeyRef:
               name: app-config
               key: POSTGRES_USER
-        - name: PGPOOL_HEALTH_CHECK_PASSWORD_FILE
-          value: "/mnt/secrets/db-password.txt"
-
-        - name: PGPOOL_POSTGRES_PASSWORD_FILE
-          value: "/mnt/secrets/db-password.txt"
         - name: PGPOOL_ADMIN_USERNAME
           value: "admin"
-        - name: PGPOOL_ADMIN_PASSWORD
-          value: "admin123"
+        - name: PGPOOL_ADMIN_PASSWORD_FILE
+          value: "/mnt/secrets/pgpool-admin-password"
         volumeMounts:
-        - mountPath: /mnt/secrets
-          name: gcp-secret-volume
+        - name: secrets-store
+          mountPath: /mnt/secrets
           readOnly: true
       volumes:
-      - name: gcp-secret-volume
+      - name: secrets-store
         csi:
-          driver: secrets-store-gke.csi.k8s.io
+          driver: secrets-store.csi.k8s.io
           readOnly: true
           volumeAttributes:
-            secretProviderClass: "gcp-db-credentials"
+            secretProviderClass: "azure-kv-db-provider"
 ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: pgpool-service
-spec:
-  ports:
-  - port: 5432
-    name: postgres
-  selector:
-    app: pgpool
+  apiVersion: v1
+  kind: Service
+  metadata:
+    name: pgpool-service
+  spec:
+    ports:
+    - port: 5432
+      name: postgres
+    selector:
+      app: pgpool
 ---
 # ==========================================
 # TIER 2: BACKEND (Node.js API)
@@ -433,7 +487,7 @@ spec:
       containers:
       - name: agent
         # Replace this with your actual image name
-        image: PYTHON_IMAGE_PLACEHOLDER
+        image: acrnodejsapprepo.azurecr.io/python:067bd2a8edcc50fa1c04753986bd033a8296a456
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
@@ -446,9 +500,9 @@ spec:
             memory: "2Gi"
             cpu: "1000m"
             
-        envFrom:
-        - secretRef:
-            name: agent-kv-secrets
+        # envFrom:
+        # - secretRef:
+        #     name: agent-kv-secrets
         # 4. CSI Volume Mount (Mandatory for Key Vault fetch to trigger on pod startup)
         volumeMounts:
         - name: secrets-store-inline

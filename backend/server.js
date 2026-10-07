@@ -10,13 +10,18 @@ app.use(express.json());
 // ==========================================
 // 1. CREDENTIALS & CONNECTIONS
 // ==========================================
-let dbPassword = process.env.DB_PASSWORD || "supersecretpassword";
-try {
-    if (fs.existsSync('/mnt/secrets/db-password.txt')) {
-        dbPassword = fs.readFileSync('/mnt/secrets/db-password.txt', 'utf8').trim();
-    }
-} catch (err) {
-    console.warn("Secret file not found, falling back to env var.");
+const SECRET_PATH = '/mnt/secrets/app-env';
+let dbPassword = process.env.DB_PASSWORD;
+
+if (fs.existsSync(SECRET_PATH)) {
+    const raw = fs.readFileSync(SECRET_PATH, 'utf8');
+    const match = raw.match(/^DB_PASSWORD=(.*)$/m);
+    dbPassword = (match ? match[1] : raw).replace(/^"|"$/g, '').trim();
+}
+
+if (!dbPassword) {
+    console.error('No DB password available, exiting');
+    process.exit(1);
 }
 
 const logger = {
