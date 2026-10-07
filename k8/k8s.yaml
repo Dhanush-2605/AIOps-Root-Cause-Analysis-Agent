@@ -155,6 +155,11 @@ spec:
         azure.workload.identity/use: "true"
     spec:
       serviceAccountName: backend-sa
+      securityContext:
+        runAsUser: 1001
+        runAsNonRoot: true
+        fsGroup: 1001
+        fsGroupChangePolicy: "OnRootMismatch"
       containers:
       - name: postgres
         image: docker.io/bitnamilegacy/postgresql:15.8.0-debian-12-r3
