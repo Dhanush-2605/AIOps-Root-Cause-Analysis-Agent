@@ -86,6 +86,8 @@ jobs:
 
       - name: Deploy Postgres Exporter via Helm
         run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
           helm upgrade --install pg-exporter prometheus-community/prometheus-postgres-exporter \
             --namespace monitoring \
             -f helm/exporter-values.yaml \
