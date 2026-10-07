@@ -83,3 +83,11 @@ jobs:
       - name: Apply Custom Manifests
         run: |
           kubectl apply -f k8/
+
+      - name: Deploy Postgres Exporter via Helm
+        run: |
+          helm upgrade --install pg-exporter prometheus-community/prometheus-postgres-exporter \
+            --namespace monitoring \
+            -f helm/exporter-values.yaml \
+            --atomic \
+            --timeout 5m

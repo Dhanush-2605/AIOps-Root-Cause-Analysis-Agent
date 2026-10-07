@@ -1,0 +1,18 @@
+config:
+  datasource:
+    host: "postgres-0.postgres-headless.default.svc.cluster.local"
+    user: "postgres"
+    passwordSecret:
+      name: pg-exporter-secret
+      key: password
+    port: "5432"
+    database: "postgres"
+    sslmode: disable
+
+serviceMonitor:
+  enabled: true
+  namespace: monitoring
+  labels:
+    release: prometheus
+
+
