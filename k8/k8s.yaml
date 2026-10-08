@@ -492,7 +492,7 @@ spec:
       containers:
       - name: agent
         # Replace this with your actual image name
-        image: acrnodejsapprepo.azurecr.io/python:067bd2a8edcc50fa1c04753986bd033a8296a456
+        image: PYTHON_IMAGE_PLACEHOLDER
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
