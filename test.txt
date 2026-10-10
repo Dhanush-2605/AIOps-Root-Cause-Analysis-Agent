@@ -1,0 +1,3 @@
+kubectl port-forward -n monitoring pod/prometheus-prometheus-stack-kube-prom-prometheus-0 9090:9090
+
+

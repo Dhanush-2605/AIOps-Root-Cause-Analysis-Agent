@@ -31,6 +31,7 @@ import {
 // to the Python agent with that prefix stripped (see nginx.conf).
 const NODE_BASE_URL = ""; // scenario run() calls already include the /api/... prefix
 const AGENT_BASE_URL = "/agent";
+// const AGENT_BASE_URL="http://localhost:8080"
 
 // Fires `count` concurrent POSTs without waiting for each one sequentially —
 // needed to actually push memory/cache metrics far enough to cross a

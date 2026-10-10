@@ -4,6 +4,8 @@ import operator
 from langchain_core.messages import BaseMessage
 
 
+# NOTE: these Field descriptions are sent to the LLM as part of the structured-output
+# schema on every proposer/critic call, so they are kept short on purpose.
 class K8sAction(BaseModel):
     action_type: Literal[
         "scale_deployment",
@@ -12,73 +14,72 @@ class K8sAction(BaseModel):
         "increase_memory_limit",
         "increase_cpu_limit",
         "kill_idle_transaction",
-        "abort_hanging_requests"
-             
-    ] = Field(
-        ...,
-        description="The precise remediation action to execute. Must match exactly one of the permitted options."
-    )
-    
-    target_name: str = Field(
-        ..., 
-        description="The exact name of the specific pod, deployment, or service to target."
-    )
-    
-    namespace: str = Field(
-        default="default", 
-        description="The Kubernetes namespace where the target resource lives."
-    )
-    
+        "abort_hanging_requests",
+    ] = Field(..., description="Action to execute; must be one of the permitted options.")
+
+    target_name: str = Field(..., description="Exact pod, deployment or service name.")
+
+    namespace: str = Field(default="default", description="Kubernetes namespace.")
+
     value: Optional[str] = Field(
-        None, 
+        None,
         description=(
-            "Action parameters: "
-            "- For scaling/limits: e.g., '3' or '512Mi'. "
-            "- For 'kill_blocking_transaction': the blocking PID, as found by "
-            "- get_blocking_transactions during investigation (e.g. '4521'). "            
-            "- For 'abort_hanging_requests': max duration in seconds (e.g., '30'). "
-            "- Leave null if the action requires no parameters."
-        )
+            "Scale/limits: '3' or '512Mi'. kill_idle_transaction: numeric PID from the "
+            "investigation (e.g. '4521'). abort_hanging_requests: max seconds (e.g. '30'). "
+            "Otherwise null."
+        ),
     )
-    
+
     reasoning: str = Field(
-        ..., 
-        description="A brief explanation of why this specific action safely resolves the root cause. This will be shown to human SREs for approval."
+        ...,
+        description="Why this action fixes the root cause, citing evidence. Shown to the human approver.",
     )
+
 
 class RemediationPlan(BaseModel):
-    root_cause: str = Field(description="A few sentence summary of why the issue occurred based on the logs/metrics.")
-    severity: str = Field(description="Must be one of: Low, Medium, High, Critical")
-    proposed_actions: List[K8sAction] = Field(description="Structured Kubernetes actions to safely remediate the issue.")
+    root_cause: str = Field(description="Short summary of why the issue occurred.")
+    severity: Literal["Low", "Medium", "High", "Critical"]
+    confidence: Literal["high", "medium", "low", "inconclusive"] = Field(
+        ..., description="Confidence in the root cause; 'inconclusive' if no clear cause."
+    )
+    proposed_actions: List[K8sAction] = Field(
+        description="Actions to remediate; empty if inconclusive."
+    )
     requires_human_approval: bool = Field(default=True)
 
+
 class CriticReview(BaseModel):
-    is_safe: bool = Field(description="True if the commands are safe to run, False if they are destructive or incorrect.")
-    feedback: str = Field(description="If unsafe, explain exactly why so the Proposer can fix it.")
+    is_safe: bool = Field(description="True if safe to run.")
+    feedback: str = Field(description="If unsafe, exactly why, so the proposer can fix it.")
 
 
-
-class AgentState(TypedDict):
+# NOTE: LangGraph silently DROPS any key a node returns that is not declared here.
+# Every key returned by any node must be listed below.
+class AgentState(TypedDict, total=False):
     # Incident Initiation
-    alert_payload: dict                      # The raw JSON from Prometheus Alertmanager
-    
+    alert_payload: dict  # The raw JSON from Prometheus Alertmanager
+
     # Investigator Loop
-    messages: Annotated[Sequence[BaseMessage], operator.add] # Chat history & tool calls
-    context_gathered: str                    # Accumulated logs and metrics from tools
-    
+    messages: Annotated[Sequence[BaseMessage], operator.add]  # Chat history & tool calls
+    context_gathered: str  # Accumulated logs and metrics from tools
+    investigation_iterations: int  # Counter for the investigator hard cap
+
     # Proposer & Critic
-    proposed_plan: RemediationPlan           # The structured output from the LLM
-    critic_feedback: str                     # Notes from the critic if the plan is rejected
-    
+    proposed_plan: RemediationPlan  # The structured output from the LLM
+    critic_feedback: str  # Notes from the critic if the plan is rejected
+    is_safe: bool  # Critic verdict on the current plan
+    critic_attempts: int  # How many times the critic rejected the current plan lineage
+    human_feedback: str  # Operator feedback from the HITL step (kept separate from critic_feedback)
+
     # Execution & Verification
-    execution_logs: str                      # Terminal output after running the commands
-    verification_passed: bool                # Did the Prometheus metric recover?
-    verification_attempts: int               # Counter to prevent infinite loops (max 3)
-    
-    
-    incident_start_time: str   # Alert timestamp or start of workflow
-    incident_end_time: str     # Post-execution completion timestamp
-    post_mortem_md: str        # Generated Markdown Post-Mortem
+    execution_logs: str  # Terminal output after running the commands
+    verification_passed: bool  # Did the Prometheus metric recover?
+    verification_attempts: int  # Counter to prevent infinite loops (max 3)
+
+    incident_start_time: str  # Alert timestamp or start of workflow
+    incident_end_time: str  # Post-execution completion timestamp
+    post_mortem_md: str  # Generated Markdown Post-Mortem
     github_pr_url: str
-    
-    hitl_route: str # 'execute', 'abort', or 'replan'
+    github_commit_url: str  # What reporter_node actually returns
+
+    hitl_route: str  # 'execute', 'abort', or 'replan'
