@@ -489,6 +489,9 @@ spec:
       labels:
         app: python-chaos-agent
     spec:
+      # >>> NEW: run as the ServiceAccount that has the RBAC from agent-rbac.yaml.
+      # Without this the pod uses the "default" ServiceAccount, which has no permissions (-> Forbidden).
+      serviceAccountName: python-chaos-agent-sa
       containers:
       - name: agent
         # Replace this with your actual image name
@@ -504,7 +507,7 @@ spec:
           limits:
             memory: "2Gi"
             cpu: "1000m"
-            
+
         # envFrom:
         # - secretRef:
         #     name: agent-kv-secrets
@@ -534,8 +537,6 @@ spec:
     - protocol: TCP
       port: 5000             # The port Alertmanager is sending traffic to
       targetPort: 8000       # Forwards traffic to your FastAPI container port
-
-
 
 
     

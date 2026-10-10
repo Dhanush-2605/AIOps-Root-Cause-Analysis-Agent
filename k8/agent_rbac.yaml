@@ -1,0 +1,76 @@
+# RBAC for the python-chaos-agent pod.
+# Apply BEFORE (re)deploying the agent:  kubectl apply -f agent-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: python-chaos-agent-sa
+  namespace: default
+---
+# 1) READ access, cluster-wide (alerts can come from any namespace).
+#    Used by the investigation tools: pod status, pod logs, deployment status, list pods.
+#    To limit this to certain namespaces, turn it into a Role + RoleBinding per namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: python-chaos-agent-read
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: python-chaos-agent-read
+subjects:
+  - kind: ServiceAccount
+    name: python-chaos-agent-sa
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: python-chaos-agent-read
+  apiGroup: rbac.authorization.k8s.io
+---
+# 2) WRITE access for remediation, limited to the "default" namespace.
+#    Copy this Role + RoleBinding into every other namespace the agent may fix things in.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: python-chaos-agent-remediate
+  namespace: default
+rules:
+  # restart_deployment, increase_memory_limit, increase_cpu_limit
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["patch"]
+  # scale_deployment
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "patch"]
+  # delete_pod
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+  # kill_idle_transaction (psql in the postgres pod) and abort_hanging_requests (curl in the app pod).
+  # The Python client opens exec over WebSocket, which needs BOTH get and create.
+  # This is the most powerful permission here: it allows a shell in ANY pod in this namespace.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: python-chaos-agent-remediate
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: python-chaos-agent-sa
+    namespace: default
+roleRef:
+  kind: Role
+  name: python-chaos-agent-remediate
+  apiGroup: rbac.authorization.k8s.io
