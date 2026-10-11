@@ -32,6 +32,20 @@ def get_gke_client():
         raise RuntimeError(f"Failed to initialize Kubernetes client: {e}")
 
 
+def _k8s_error(e: ApiException, what: str) -> str:
+    """Turns a Kubernetes API error into text the LLM cannot misread.
+    A 401/403 is a PERMISSION problem of this agent, not evidence about the resource."""
+    if e.status in (401, 403):
+        return (
+            f"ACCESS DENIED ({e.status}) while {what}: the agent's service account lacks RBAC "
+            "permission for this call. This says NOTHING about whether the resource exists or is "
+            "healthy; treat it as an evidence gap."
+        )
+    if e.status == 404:
+        return f"Not found (404) while {what}."
+    return f"Kubernetes API Error while {what}: {e.reason}"
+
+
 # ---------------------------------------------------------------------------
 # Postgres helpers (shared by the diagnostic tools AND the executor)
 # ---------------------------------------------------------------------------
@@ -51,10 +65,45 @@ def find_postgres_pod(namespace: str = "default") -> Optional[str]:
 # The query is passed as "$1", never spliced into the shell string.
 # Env var names differ per image: official=POSTGRES_PASSWORD, Bitnami=POSTGRESQL_*.
 # If your image uses another name, add it to the fallback chain below.
-_PSQL_SCRIPT = (
-    'export PGPASSWORD="${PGPASSWORD:-${POSTGRES_PASSWORD:-${POSTGRESQL_POSTGRES_PASSWORD:-$POSTGRESQL_PASSWORD}}}"; '
-    'exec psql -U "${POSTGRES_USER:-postgres}" -d postgres -t -A -F " | " -c "$1"'
-)
+#
+# Where the password is looked up, in order (all INSIDE the postgres container):
+#   1. file named by agent env PG_PASSWORD_FILE        (e.g. a Key Vault CSI mount)
+#   2. variable named by agent env PG_PASSWORD_ENV_VAR (e.g. DB_PASSWORD)
+#   3. file named by the container's POSTGRES_PASSWORD_FILE
+#   4. PGPASSWORD / POSTGRES_PASSWORD / POSTGRESQL_POSTGRES_PASSWORD / POSTGRESQL_PASSWORD
+# PG_PASSWORD_ENV_VAR / PG_PASSWORD_FILE / PG_USER are just NAMES/PATHS (not secrets), set on the agent.
+# sh positional args: $1=query $2=env-var name $3=password file $4=db user
+_PSQL_SCRIPT = r'''
+if [ -n "$3" ] && [ -r "$3" ]; then
+  PGPASSWORD="$(cat "$3")"
+elif [ -n "$2" ]; then
+  eval "PGPASSWORD=\"\${$2}\""
+elif [ -n "$POSTGRES_PASSWORD_FILE" ] && [ -r "$POSTGRES_PASSWORD_FILE" ]; then
+  PGPASSWORD="$(cat "$POSTGRES_PASSWORD_FILE")"
+else
+  PGPASSWORD="${PGPASSWORD:-${POSTGRES_PASSWORD:-${POSTGRESQL_POSTGRES_PASSWORD:-$POSTGRESQL_PASSWORD}}}"
+fi
+export PGPASSWORD
+exec psql -U "${4:-${POSTGRES_USER:-postgres}}" -d postgres -t -A -F " | " -c "$1"
+'''
+
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PATH_OK = re.compile(r"^[\w./\-]+$")
+
+
+def _psql_cmd(query: str) -> list:
+    """Builds the exec command. Names/paths come from the agent's own env and are validated,
+    because the env-var name is expanded by the shell (eval)."""
+    var = os.environ.get("PG_PASSWORD_ENV_VAR", "").strip()
+    path = os.environ.get("PG_PASSWORD_FILE", "").strip()
+    user = os.environ.get("PG_USER", "").strip()
+    if var and not _ENV_NAME.match(var):
+        raise RuntimeError("PG_PASSWORD_ENV_VAR is not a valid variable name")
+    if path and not _PATH_OK.match(path):
+        raise RuntimeError("PG_PASSWORD_FILE contains unexpected characters")
+    if user and not _PATH_OK.match(user):
+        raise RuntimeError("PG_USER contains unexpected characters")
+    return ["sh", "-c", _PSQL_SCRIPT, "sh", query, var, path, user]
 
 
 def run_psql(query: str, namespace: str = "default") -> str:
@@ -66,9 +115,8 @@ def run_psql(query: str, namespace: str = "default") -> str:
         raise RuntimeError("Could not locate a PostgreSQL pod in this namespace.")
 
     v1_api, _ = get_gke_client()
-    # sh -c SCRIPT sh QUERY  ->  $0="sh", $1=QUERY
     # psql flags: -t tuples only, -A unaligned, -F' | ' separator that survives commas in query text
-    exec_cmd = ["sh", "-c", _PSQL_SCRIPT, "sh", query]
+    exec_cmd = _psql_cmd(query)
     try:
         return stream(
             v1_api.connect_get_namespaced_pod_exec,
@@ -108,7 +156,7 @@ def fetch_filtered_pod_logs(namespace: str, pod_name: str, tail_lines: int = 100
         return "Filtered Error Logs:\n" + "\n".join(filtered_logs)
 
     except ApiException as e:
-        return f"Kubernetes API Error: Could not fetch logs for pod {pod_name}. Details: {e.reason}"
+        return _k8s_error(e, f"fetching logs for pod {pod_name}")
     except Exception as e:
         return f"Error: could not fetch logs for pod {pod_name}: {e}"
 
@@ -155,9 +203,57 @@ def get_pod_status(namespace: str, pod_name: str) -> str:
 
         return json.dumps(status_info, indent=2)
     except ApiException as e:
-        return f"Kubernetes API Error: {e.reason}"
+        return _k8s_error(e, f"reading status of pod {pod_name}")
     except Exception as e:
         return f"Error: could not read pod status for {pod_name}: {e}"
+
+
+@tool
+def get_deployment_status(namespace: str, deployment_name: str) -> str:
+    """Returns a deployment's desired/ready/available replicas, rollout conditions and pod selector.
+    Use for alerts about missing, scaled-to-zero or unavailable deployments."""
+    try:
+        _, apps_v1_api = get_gke_client()
+        d = apps_v1_api.read_namespaced_deployment(name=deployment_name, namespace=namespace)
+        s = d.status
+        return json.dumps({
+            "desired_replicas": d.spec.replicas,
+            "ready": s.ready_replicas or 0,
+            "available": s.available_replicas or 0,
+            "updated": s.updated_replicas or 0,
+            "unavailable": s.unavailable_replicas or 0,
+            "selector": d.spec.selector.match_labels,
+            "conditions": [
+                {"type": c.type, "status": c.status, "reason": c.reason, "message": c.message}
+                for c in (s.conditions or [])
+            ],
+        }, indent=2)
+    except ApiException as e:
+        return _k8s_error(e, f"reading deployment {deployment_name}")
+    except Exception as e:
+        return f"Error: could not read deployment {deployment_name}: {e}"
+
+
+@tool
+def list_pods(namespace: str, label_selector: str = "") -> str:
+    """Lists pods (name, phase, ready, restarts) in a namespace, optionally filtered by a label
+    selector such as 'app=backend'. Use it to find real pod names before asking for logs/status."""
+    try:
+        v1_api, _ = get_gke_client()
+        pods = v1_api.list_namespaced_pod(namespace=namespace, label_selector=label_selector or None)
+        if not pods.items:
+            return f"No pods found in namespace '{namespace}' with selector '{label_selector}'."
+        lines = []
+        for p in pods.items[:50]:
+            cs = p.status.container_statuses or []
+            ready = sum(1 for c in cs if c.ready)
+            restarts = sum(c.restart_count for c in cs)
+            lines.append(f"{p.metadata.name} | {p.status.phase} | ready {ready}/{len(cs)} | restarts {restarts}")
+        return "name | phase | ready | restarts\n" + "\n".join(lines)
+    except ApiException as e:
+        return _k8s_error(e, f"listing pods in {namespace}")
+    except Exception as e:
+        return f"Error: could not list pods in {namespace}: {e}"
 
 
 @tool
@@ -277,6 +373,8 @@ def get_memory_trend(pod_name: str, namespace: str = "default", window_minutes: 
 INVESTIGATION_TOOLS = [
     fetch_filtered_pod_logs,
     get_pod_status,
+    get_deployment_status,
+    list_pods,
     get_blocking_transactions,
     get_idle_in_transaction,
     fetch_hanging_requests,
