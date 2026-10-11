@@ -49,49 +49,57 @@ def _k8s_error(e: ApiException, what: str) -> str:
 # ---------------------------------------------------------------------------
 # Postgres helpers (shared by the diagnostic tools AND the executor)
 # ---------------------------------------------------------------------------
-def find_postgres_pod(namespace: str = "default") -> Optional[str]:
-    v1_api, _ = get_gke_client()
-    pods = v1_api.list_namespaced_pod(namespace=namespace, label_selector="app=postgres")
-    if pods.items:
-        return pods.items[0].metadata.name
-    for p in v1_api.list_namespaced_pod(namespace=namespace).items:
-        if "postgres" in p.metadata.name:
-            return p.metadata.name
-    return None
-
-
-# The password is read from the postgres container's OWN environment (set there by the
-# image / Helm chart), so no secret ever lives in this agent's code, logs or checkpoints.
-# The query is passed as "$1", never spliced into the shell string.
-# Env var names differ per image: official=POSTGRES_PASSWORD, Bitnami=POSTGRESQL_*.
-# If your image uses another name, add it to the fallback chain below.
-#
-# Where the password is looked up, in order (all INSIDE the postgres container):
-#   1. file named by agent env PG_PASSWORD_FILE        (e.g. a Key Vault CSI mount)
-#   2. variable named by agent env PG_PASSWORD_ENV_VAR (e.g. DB_PASSWORD)
-#   3. file named by the container's POSTGRES_PASSWORD_FILE
-#   4. PGPASSWORD / POSTGRES_PASSWORD / POSTGRESQL_POSTGRES_PASSWORD / POSTGRESQL_PASSWORD
-# PG_PASSWORD_ENV_VAR / PG_PASSWORD_FILE / PG_USER are just NAMES/PATHS (not secrets), set on the agent.
-# sh positional args: $1=query $2=env-var name $3=password file $4=db user
+# HOW THE DB PASSWORD IS FOUND (first match wins):
+#   A. PG_PASSWORD on the AGENT (e.g. from your Key Vault secret) -> sent to psql over STDIN,
+#      so it never appears in the exec command line, API-server audit logs or `ps`.
+#   B. Inside the POSTGRES container, first match wins: file PG_PASSWORD_FILE, variable named by
+#      PG_PASSWORD_ENV_VAR, the Key Vault mount /mnt/secrets/app-env (DEFAULT: your StatefulSet's own
+#      start script reads the password from it; a `kubectl exec` shell does NOT inherit the
+#      POSTGRESQL_PASSWORD that script exports), the container's POSTGRES_PASSWORD_FILE, or
+#      PGPASSWORD / POSTGRES_PASSWORD / POSTGRESQL_POSTGRES_PASSWORD / POSTGRESQL_PASSWORD.
+#      Files may hold a `DB_PASSWORD=...` line or just the raw password (same parsing as your YAML).
+# PG_PASSWORD_ENV_VAR / PG_PASSWORD_FILE / PG_USER are just NAMES/PATHS, not secrets.
+# The query is passed as "$1", never spliced into the shell string. psql runs with -w, so it
+# fails fast instead of waiting for a password prompt that nobody can answer.
+# sh positional args: $1=query $2=env-var name $3=password file $4=db user $5="1" if password is on stdin $6=default secret file
+_DEFAULT_SECRET_FILE = "/mnt/secrets/app-env"  # Key Vault CSI mount of the postgres StatefulSet
 _PSQL_SCRIPT = r'''
-if [ -n "$3" ] && [ -r "$3" ]; then
-  PGPASSWORD="$(cat "$3")"
+read_pw_file() {
+  if grep -q '^DB_PASSWORD=' "$1"; then
+    grep '^DB_PASSWORD=' "$1" | head -1 | cut -d= -f2- | tr -d '"\r\n'
+  else
+    tr -d '\r\n' < "$1"
+  fi
+}
+if [ "$5" = "1" ]; then
+  IFS= read -r PGPASSWORD
+elif [ -n "$3" ] && [ -r "$3" ]; then
+  PGPASSWORD="$(read_pw_file "$3")"
 elif [ -n "$2" ]; then
   eval "PGPASSWORD=\"\${$2}\""
+elif [ -r "$6" ]; then
+  PGPASSWORD="$(read_pw_file "$6")"
 elif [ -n "$POSTGRES_PASSWORD_FILE" ] && [ -r "$POSTGRES_PASSWORD_FILE" ]; then
-  PGPASSWORD="$(cat "$POSTGRES_PASSWORD_FILE")"
+  PGPASSWORD="$(read_pw_file "$POSTGRES_PASSWORD_FILE")"
 else
   PGPASSWORD="${PGPASSWORD:-${POSTGRES_PASSWORD:-${POSTGRESQL_POSTGRES_PASSWORD:-$POSTGRESQL_PASSWORD}}}"
 fi
 export PGPASSWORD
-exec psql -U "${4:-${POSTGRES_USER:-postgres}}" -d postgres -t -A -F " | " -c "$1"
+exec psql -w -U "${4:-${POSTGRES_USER:-postgres}}" -d postgres -t -A -F " | " -c "$1"
 '''
+
+# Prints variable NAMES (never values) and likely secret mount paths, to help find the password.
+_HINT_SCRIPT = (
+    'echo "env var names: $(env | cut -d= -f1 | grep -i -E "pass|pwd|pg|postgres|secret" | sort | tr "\\n" " ")"; '
+    'echo "mounts: $(ls -d /mnt/*/* /run/secrets/* /etc/postgresql* 2>/dev/null | tr "\\n" " ")"'
+)
 
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PATH_OK = re.compile(r"^[\w./\-]+$")
+_EXEC_TIMEOUT_SEC = 30
 
 
-def _psql_cmd(query: str) -> list:
+def _psql_cmd(query: str, stdin_pw: bool = False) -> list:
     """Builds the exec command. Names/paths come from the agent's own env and are validated,
     because the env-var name is expanded by the shell (eval)."""
     var = os.environ.get("PG_PASSWORD_ENV_VAR", "").strip()
@@ -103,28 +111,102 @@ def _psql_cmd(query: str) -> list:
         raise RuntimeError("PG_PASSWORD_FILE contains unexpected characters")
     if user and not _PATH_OK.match(user):
         raise RuntimeError("PG_USER contains unexpected characters")
-    return ["sh", "-c", _PSQL_SCRIPT, "sh", query, var, path, user]
+    return ["sh", "-c", _PSQL_SCRIPT, "sh", query, var, path, user, "1" if stdin_pw else "", _DEFAULT_SECRET_FILE]
+
+
+def _exec_in_pod(pod: str, namespace: str, command: list, stdin_text: Optional[str] = None) -> str:
+    """Runs a command in a pod and returns stdout. Raises RuntimeError (with stderr) on a non-zero
+    exit, so a failed psql is an error instead of 'successful' output text."""
+    v1_api, _ = get_gke_client()
+    ws = stream(
+        v1_api.connect_get_namespaced_pod_exec,
+        name=pod, namespace=namespace, command=command,
+        stderr=True, stdin=stdin_text is not None, stdout=True, tty=False,
+        _preload_content=False,
+    )
+    out, err = [], []
+    try:
+        if stdin_text is not None:
+            ws.write_stdin(stdin_text + "\n")
+        deadline = time.time() + _EXEC_TIMEOUT_SEC
+        while ws.is_open() and time.time() < deadline:
+            ws.update(timeout=1)
+            if ws.peek_stdout():
+                out.append(ws.read_stdout())
+            if ws.peek_stderr():
+                err.append(ws.read_stderr())
+        timed_out = ws.is_open()
+        rc = getattr(ws, "returncode", None)
+    finally:
+        ws.close()
+    stdout, stderr = "".join(out), "".join(err).strip()
+    if timed_out:
+        raise RuntimeError(f"command timed out after {_EXEC_TIMEOUT_SEC}s in pod '{pod}'")
+    if rc not in (0, None) or (rc is None and stderr and not stdout.strip()):
+        raise RuntimeError(stderr or f"exit code {rc}")
+    return stdout
+
+
+def _exec_psql(pod: str, namespace: str, query: str) -> str:
+    pw = os.environ.get("PG_PASSWORD", "")
+    try:
+        return _exec_in_pod(pod, namespace, _psql_cmd(query, stdin_pw=bool(pw)), stdin_text=pw if pw else None)
+    except RuntimeError as e:
+        msg = str(e)
+        if "no password supplied" in msg or "authentication failed" in msg:
+            try:
+                hint = _exec_in_pod(pod, namespace, ["sh", "-c", _HINT_SCRIPT]).strip().replace("\n", "; ")
+            except Exception:
+                hint = "(could not inspect the container)"
+            raise RuntimeError(
+                f"DB AUTH FAILED on pod '{pod}': the agent has no valid database password"
+                f"{' (PG_PASSWORD is set but was rejected)' if pw else ''}. "
+                f"Container hints: {hint}. This is a configuration gap of the agent and says "
+                "NOTHING about the database state; treat it as an evidence gap."
+            )
+        raise RuntimeError(f"psql failed in pod '{pod}': {msg}")
+
+
+_PRIMARY_CACHE: dict = {}
+
+
+def find_postgres_pod(namespace: str = "default") -> Optional[str]:
+    """Returns the PRIMARY postgres pod. With several postgres pods (primary + replicas) the first
+    one found may be a replica: idle-in-transaction sessions and pg_terminate_backend only work on the
+    primary, so each candidate is probed with pg_is_in_recovery()."""
+    cached = _PRIMARY_CACHE.get(namespace)
+    if cached and time.time() - cached[1] < 60:
+        return cached[0]
+
+    v1_api, _ = get_gke_client()
+    names = [p.metadata.name for p in v1_api.list_namespaced_pod(namespace=namespace, label_selector="app=postgres").items]
+    if not names:
+        names = [p.metadata.name for p in v1_api.list_namespaced_pod(namespace=namespace).items if "postgres" in p.metadata.name]
+    names = sorted(n for n in names if "exporter" not in n)
+    if not names:
+        return None
+    if len(names) == 1:
+        return names[0]
+
+    for n in names:
+        try:
+            if _exec_psql(n, namespace, "SELECT pg_is_in_recovery();").strip().lower() == "f":
+                _PRIMARY_CACHE[namespace] = (n, time.time())
+                return n
+        except Exception:
+            continue
+    return names[0]  # could not probe (e.g. auth failure): the real call will report why
 
 
 def run_psql(query: str, namespace: str = "default") -> str:
-    """Runs a query inside the postgres pod. Raises RuntimeError on failure.
+    """Runs a query inside the primary postgres pod. Raises RuntimeError on failure.
     Only ever called with fixed queries (or a pre-validated integer PID), never
     with free-form LLM text."""
     pod = find_postgres_pod(namespace)
     if not pod:
         raise RuntimeError("Could not locate a PostgreSQL pod in this namespace.")
-
-    v1_api, _ = get_gke_client()
     # psql flags: -t tuples only, -A unaligned, -F' | ' separator that survives commas in query text
-    exec_cmd = _psql_cmd(query)
-    try:
-        return stream(
-            v1_api.connect_get_namespaced_pod_exec,
-            name=pod, namespace=namespace, command=exec_cmd,
-            stderr=True, stdin=False, stdout=True, tty=False,
-        )
-    except Exception as e:
-        raise RuntimeError(f"psql exec failed in pod '{pod}': {e}")
+    return _exec_psql(pod, namespace, query)
 
 
 # ---------------------------------------------------------------------------
