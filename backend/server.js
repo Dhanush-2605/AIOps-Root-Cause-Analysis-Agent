@@ -98,7 +98,7 @@ app.use((req, res, next) => {
 
 // ---- Poll activeRequests every 5s and update the gauge ----
 // This is what turns your existing tracking Map into something Prometheus can alert on
-const HANG_THRESHOLD_SEC = 30;
+const HANG_THRESHOLD_SEC = 10;
 setInterval(() => {
     const now = Date.now();
     let count = 0;
@@ -107,7 +107,6 @@ setInterval(() => {
     }
     longRunningRequests.set({ threshold_sec: String(HANG_THRESHOLD_SEC) }, count);
 }, 5000);
-
 
 
 // Middleware to track in-flight requests so the AI Agent can abort them
@@ -221,7 +220,7 @@ app.post('/api/payments/process', async (req, res) => {
         }
         
         await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => resolve(), 60000); 
+            const timer = setTimeout(() => resolve(), 90000); 
             req.abortSignal.addEventListener('abort', () => {
                 clearTimeout(timer);
                 reject(new Error('AbortError'));

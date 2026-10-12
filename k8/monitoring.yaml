@@ -81,6 +81,14 @@ spec:
       annotations:
         summary: "PostgreSQL queries blocked by locks"
         description: "{{ $value }} queries currently blocked waiting for row/table locks."
+    
+    - alert: HangingRequestsDetected
+      expr: http_requests_long_running_total{threshold_sec="10"} > 0
+      for: 30s
+      labels: { severity: critical }
+      annotations:
+        summary: "Requests hanging >10s on pod {{ $labels.pod }}"
+        description: "{{ $value }} in-flight request(s) have been open for more than 10s, continuously for 30s."
 
     - alert: PersistentVolumeAlmostFull
       expr: kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.10
