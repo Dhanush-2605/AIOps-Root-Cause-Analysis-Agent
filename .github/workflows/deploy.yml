@@ -1,17 +1,13 @@
 name: Build and Deploy 3-Tier App
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 env:
   RESOURCE_GROUP: rg-production
   ACR_NAME: acrnodejsapprepo
   ACR_LOGIN_SERVER: acrnodejsapprepo.azurecr.io
   CLUSTER_NAME: aks-production-cluster
-  # These three come straight from your `terraform output` (workload_identity_client_id,
-  # tenant_id, subscription_id). Store them as repo secrets, not plain env vars.
   AZURE_CLIENT_ID: 56e10af1-702c-45b1-b5e3-108416c612da
   AZURE_TENANT_ID: 460e9a4b-7c0a-4b4f-8241-502b2cb1f3c4
   AZURE_SUBSCRIPTION_ID: b0c6c5be-d932-4a5f-b398-0b1261b5820a
@@ -63,7 +59,6 @@ jobs:
 
       - name: Deploy to AKS
         run: |
-          # Inject the newly built image tags into the K8s manifest
           sed -i "s|BACKEND_IMAGE_PLACEHOLDER|${{ env.BACKEND_TAG }}|g" k8/k8s.yaml
           sed -i "s|FRONTEND_IMAGE_PLACEHOLDER|${{ env.FRONTEND_TAG }}|g" k8/k8s.yaml
           sed -i "s|PYTHON_IMAGE_PLACEHOLDER|${{ env.PYTHON_TAG }}|g" k8/k8s.yaml
@@ -90,11 +85,6 @@ jobs:
           helm repo update
           helm upgrade --install pg-exporter prometheus-community/prometheus-postgres-exporter \
             --namespace monitoring \
-            -f helm/exporter-values.yaml \
+            --f helm/exporter-values.yaml \
             --atomic \
             --timeout 5m
-
-
-
-
-
