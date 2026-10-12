@@ -85,6 +85,6 @@ jobs:
           helm repo update
           helm upgrade --install pg-exporter prometheus-community/prometheus-postgres-exporter \
             --namespace monitoring \
-            --f helm/exporter-values.yaml \
+            -f helm/exporter-values.yaml \
             --atomic \
             --timeout 5m
