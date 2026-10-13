@@ -1,5 +1,4 @@
 # RBAC for the python-chaos-agent pod.
-# Apply BEFORE (re)deploying the agent:  kubectl apply -f agent-rbac.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:

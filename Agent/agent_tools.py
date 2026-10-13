@@ -1,8 +1,10 @@
+from contextlib import closing
 from typing import Optional
 from langchain_core.tools import tool
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
-from kubernetes.stream import stream
+from dotenv import dotenv_values
+import psycopg2
 import requests
 import json
 import re
@@ -11,8 +13,10 @@ import time
 
 
 BACKEND_ADMIN_URL = os.environ.get("BACKEND_ADMIN_URL", "http://backend-service:3000")
-PROM_URL = os.environ.get("PROM_URL", "http://prometheus-service:9090")
-
+PROM_URL = os.environ.get(
+    "PROM_URL",
+    "http://prometheus-stack-kube-prom-prometheus.monitoring.svc.cluster.local:9090",
+)
 # k8s resource names / pod names: letters, digits, '-' and '.'. Used to stop the LLM
 # from smuggling PromQL into f-string queries.
 _SAFE_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9\-\.]{0,252}$")
@@ -47,166 +51,74 @@ def _k8s_error(e: ApiException, what: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Postgres helpers (shared by the diagnostic tools AND the executor)
+# Postgres helpers: direct connection through pgpool (same as the Node backend)
 # ---------------------------------------------------------------------------
-# HOW THE DB PASSWORD IS FOUND (first match wins):
-#   A. PG_PASSWORD on the AGENT (e.g. from your Key Vault secret) -> sent to psql over STDIN,
-#      so it never appears in the exec command line, API-server audit logs or `ps`.
-#   B. Inside the POSTGRES container, first match wins: file PG_PASSWORD_FILE, variable named by
-#      PG_PASSWORD_ENV_VAR, the Key Vault mount /mnt/secrets/app-env (DEFAULT: your StatefulSet's own
-#      start script reads the password from it; a `kubectl exec` shell does NOT inherit the
-#      POSTGRESQL_PASSWORD that script exports), the container's POSTGRES_PASSWORD_FILE, or
-#      PGPASSWORD / POSTGRES_PASSWORD / POSTGRESQL_POSTGRES_PASSWORD / POSTGRESQL_PASSWORD.
-#      Files may hold a `DB_PASSWORD=...` line or just the raw password (same parsing as your YAML).
-# PG_PASSWORD_ENV_VAR / PG_PASSWORD_FILE / PG_USER are just NAMES/PATHS, not secrets.
-# The query is passed as "$1", never spliced into the shell string. psql runs with -w, so it
-# fails fast instead of waiting for a password prompt that nobody can answer.
-# sh positional args: $1=query $2=env-var name $3=password file $4=db user $5="1" if password is on stdin $6=default secret file
-_DEFAULT_SECRET_FILE = "/mnt/secrets/app-env"  # Key Vault CSI mount of the postgres StatefulSet
-_PSQL_SCRIPT = r'''
-read_pw_file() {
-  if grep -q '^DB_PASSWORD=' "$1"; then
-    grep '^DB_PASSWORD=' "$1" | head -1 | cut -d= -f2- | tr -d '"\r\n'
-  else
-    tr -d '\r\n' < "$1"
-  fi
-}
-if [ "$5" = "1" ]; then
-  IFS= read -r PGPASSWORD
-elif [ -n "$3" ] && [ -r "$3" ]; then
-  PGPASSWORD="$(read_pw_file "$3")"
-elif [ -n "$2" ]; then
-  eval "PGPASSWORD=\"\${$2}\""
-elif [ -r "$6" ]; then
-  PGPASSWORD="$(read_pw_file "$6")"
-elif [ -n "$POSTGRES_PASSWORD_FILE" ] && [ -r "$POSTGRES_PASSWORD_FILE" ]; then
-  PGPASSWORD="$(read_pw_file "$POSTGRES_PASSWORD_FILE")"
-else
-  PGPASSWORD="${PGPASSWORD:-${POSTGRES_PASSWORD:-${POSTGRESQL_POSTGRES_PASSWORD:-$POSTGRESQL_PASSWORD}}}"
-fi
-export PGPASSWORD
-exec psql -w -U "${4:-${POSTGRES_USER:-postgres}}" -d postgres -t -A -F " | " -c "$1"
-'''
+# The Key Vault CSI mount holds a .env-style file (DB_PASSWORD=...). It is parsed with
+# python-dotenv into a dict; nothing is exported into os.environ.
+# The file is re-read on every connection, so secret rotation is picked up automatically.
+SECRET_PATH = os.environ.get("DB_SECRET_PATH", "/mnt/secrets/app-env")
 
-# Prints variable NAMES (never values) and likely secret mount paths, to help find the password.
-_HINT_SCRIPT = (
-    'echo "env var names: $(env | cut -d= -f1 | grep -i -E "pass|pwd|pg|postgres|secret" | sort | tr "\\n" " ")"; '
-    'echo "mounts: $(ls -d /mnt/*/* /run/secrets/* /etc/postgresql* 2>/dev/null | tr "\\n" " ")"'
-)
+DB_HOST = os.environ.get("DB_HOST", "pgpool-service")
+DB_PORT = int(os.environ.get("DB_PORT", "5432"))
+DB_USER = os.environ.get("DB_USER", "postgres")  # better: a dedicated role with pg_monitor
+DB_NAME = os.environ.get("DB_NAME", "mytierdb")
 
-_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_PATH_OK = re.compile(r"^[\w./\-]+$")
-_EXEC_TIMEOUT_SEC = 30
+# pgpool load-balances plain SELECTs across nodes. pg_stat_activity and pg_blocking_pids only
+# show the node you land on, and the sessions we care about live on the PRIMARY. This comment
+# makes pgpool send the query to the primary.
+_PRIMARY_HINT = "/*NO LOAD BALANCE*/ "
 
 
-def _psql_cmd(query: str, stdin_pw: bool = False) -> list:
-    """Builds the exec command. Names/paths come from the agent's own env and are validated,
-    because the env-var name is expanded by the shell (eval)."""
-    var = os.environ.get("PG_PASSWORD_ENV_VAR", "").strip()
-    path = os.environ.get("PG_PASSWORD_FILE", "").strip()
-    user = os.environ.get("PG_USER", "").strip()
-    if var and not _ENV_NAME.match(var):
-        raise RuntimeError("PG_PASSWORD_ENV_VAR is not a valid variable name")
-    if path and not _PATH_OK.match(path):
-        raise RuntimeError("PG_PASSWORD_FILE contains unexpected characters")
-    if user and not _PATH_OK.match(user):
-        raise RuntimeError("PG_USER contains unexpected characters")
-    return ["sh", "-c", _PSQL_SCRIPT, "sh", query, var, path, user, "1" if stdin_pw else "", _DEFAULT_SECRET_FILE]
+def _read_db_password() -> str:
+    # Fallback to a plain env var for local dev, when the secret isn't mounted.
+    if os.path.exists(SECRET_PATH):
+        password = dotenv_values(SECRET_PATH).get("DB_PASSWORD")
+        if password:
+            return password
+        raise RuntimeError(f"DB_PASSWORD not found in {SECRET_PATH}")
+    password = os.environ.get("DB_PASSWORD")
+    if password:
+        return password
+    raise RuntimeError(f"Secret file {SECRET_PATH} not found and DB_PASSWORD env var is not set")
 
 
-def _exec_in_pod(pod: str, namespace: str, command: list, stdin_text: Optional[str] = None) -> str:
-    """Runs a command in a pod and returns stdout. Raises RuntimeError (with stderr) on a non-zero
-    exit, so a failed psql is an error instead of 'successful' output text."""
-    v1_api, _ = get_gke_client()
-    ws = stream(
-        v1_api.connect_get_namespaced_pod_exec,
-        name=pod, namespace=namespace, command=command,
-        stderr=True, stdin=stdin_text is not None, stdout=True, tty=False,
-        _preload_content=False,
+def _get_conn():
+    conn = psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        user=DB_USER,
+        password=_read_db_password(),
+        dbname=DB_NAME,
+        connect_timeout=5,
+        application_name="diagnostic-agent",
+        options="-c statement_timeout=10000",  # 10s cap on any diagnostic query
     )
-    out, err = [], []
-    try:
-        if stdin_text is not None:
-            ws.write_stdin(stdin_text + "\n")
-        deadline = time.time() + _EXEC_TIMEOUT_SEC
-        while ws.is_open() and time.time() < deadline:
-            ws.update(timeout=1)
-            if ws.peek_stdout():
-                out.append(ws.read_stdout())
-            if ws.peek_stderr():
-                err.append(ws.read_stderr())
-        timed_out = ws.is_open()
-        rc = getattr(ws, "returncode", None)
-    finally:
-        ws.close()
-    stdout, stderr = "".join(out), "".join(err).strip()
-    if timed_out:
-        raise RuntimeError(f"command timed out after {_EXEC_TIMEOUT_SEC}s in pod '{pod}'")
-    if rc not in (0, None) or (rc is None and stderr and not stdout.strip()):
-        raise RuntimeError(stderr or f"exit code {rc}")
-    return stdout
+    # Diagnostics must never write, and autocommit avoids leaving our own
+    # session 'idle in transaction' (which would pollute the very check we run).
+    conn.set_session(readonly=True, autocommit=True)
+    return conn
 
 
-def _exec_psql(pod: str, namespace: str, query: str) -> str:
-    pw = os.environ.get("PG_PASSWORD", "")
+def run_psql(query: str, params: Optional[tuple] = None) -> str:
+    """Runs a read-only query on the primary (via pgpool) and returns rows formatted as
+    'col | col | col' lines. Raises RuntimeError on failure.
+    Values are always passed via `params`, never spliced into the query string."""
     try:
-        return _exec_in_pod(pod, namespace, _psql_cmd(query, stdin_pw=bool(pw)), stdin_text=pw if pw else None)
-    except RuntimeError as e:
-        msg = str(e)
-        if "no password supplied" in msg or "authentication failed" in msg:
-            try:
-                hint = _exec_in_pod(pod, namespace, ["sh", "-c", _HINT_SCRIPT]).strip().replace("\n", "; ")
-            except Exception:
-                hint = "(could not inspect the container)"
+        with closing(_get_conn()) as conn, conn.cursor() as cur:
+            cur.execute(_PRIMARY_HINT + query, params)
+            rows = cur.fetchall()
+    except psycopg2.OperationalError as e:
+        msg = str(e).strip()
+        if "password authentication failed" in msg or "no password supplied" in msg:
             raise RuntimeError(
-                f"DB AUTH FAILED on pod '{pod}': the agent has no valid database password"
-                f"{' (PG_PASSWORD is set but was rejected)' if pw else ''}. "
-                f"Container hints: {hint}. This is a configuration gap of the agent and says "
+                f"DB AUTH FAILED for user '{DB_USER}' at {DB_HOST}:{DB_PORT}: the agent's database "
+                "credentials were rejected. This is a configuration gap of the agent and says "
                 "NOTHING about the database state; treat it as an evidence gap."
             )
-        raise RuntimeError(f"psql failed in pod '{pod}': {msg}")
-
-
-_PRIMARY_CACHE: dict = {}
-
-
-def find_postgres_pod(namespace: str = "default") -> Optional[str]:
-    """Returns the PRIMARY postgres pod. With several postgres pods (primary + replicas) the first
-    one found may be a replica: idle-in-transaction sessions and pg_terminate_backend only work on the
-    primary, so each candidate is probed with pg_is_in_recovery()."""
-    cached = _PRIMARY_CACHE.get(namespace)
-    if cached and time.time() - cached[1] < 60:
-        return cached[0]
-
-    v1_api, _ = get_gke_client()
-    names = [p.metadata.name for p in v1_api.list_namespaced_pod(namespace=namespace, label_selector="app=postgres").items]
-    if not names:
-        names = [p.metadata.name for p in v1_api.list_namespaced_pod(namespace=namespace).items if "postgres" in p.metadata.name]
-    names = sorted(n for n in names if "exporter" not in n)
-    if not names:
-        return None
-    if len(names) == 1:
-        return names[0]
-
-    for n in names:
-        try:
-            if _exec_psql(n, namespace, "SELECT pg_is_in_recovery();").strip().lower() == "f":
-                _PRIMARY_CACHE[namespace] = (n, time.time())
-                return n
-        except Exception:
-            continue
-    return names[0]  # could not probe (e.g. auth failure): the real call will report why
-
-
-def run_psql(query: str, namespace: str = "default") -> str:
-    """Runs a query inside the primary postgres pod. Raises RuntimeError on failure.
-    Only ever called with fixed queries (or a pre-validated integer PID), never
-    with free-form LLM text."""
-    pod = find_postgres_pod(namespace)
-    if not pod:
-        raise RuntimeError("Could not locate a PostgreSQL pod in this namespace.")
-    # psql flags: -t tuples only, -A unaligned, -F' | ' separator that survives commas in query text
-    return _exec_psql(pod, namespace, query)
+        raise RuntimeError(f"Could not connect/query {DB_HOST}:{DB_PORT}: {msg}")
+    except psycopg2.Error as e:
+        raise RuntimeError(f"psql query failed: {str(e).strip()}")
+    return "\n".join(" | ".join("" if v is None else str(v) for v in row) for row in rows)
 
 
 # ---------------------------------------------------------------------------
@@ -355,19 +267,19 @@ def fetch_hanging_requests(threshold_sec: int = 30) -> str:
 
 
 @tool
-def get_idle_in_transaction(namespace: str = "default", idle_threshold_sec: int = 30) -> str:
+def get_idle_in_transaction(idle_threshold_sec: int = 30) -> str:
     """Lists connections idle-in-transaction longer than idle_threshold_sec — these
     hold row locks and pool slots without doing work. This is exactly the bug pattern
     in /api/orders/checkout (missing ROLLBACK on early return)."""
-    query = f"""
+    query = """
     SELECT pid, usename, application_name, now() - state_change AS idle_duration, query
     FROM pg_stat_activity
     WHERE state = 'idle in transaction'
-      AND now() - state_change > interval '{int(idle_threshold_sec)} seconds'
+      AND now() - state_change > make_interval(secs => %s)
     ORDER BY idle_duration DESC;
     """
     try:
-        result = run_psql(query, namespace)
+        result = run_psql(query, (int(idle_threshold_sec),))
     except Exception as e:
         return f"Error executing diagnostic query: {e}"
     if not result.strip():
@@ -376,7 +288,7 @@ def get_idle_in_transaction(namespace: str = "default", idle_threshold_sec: int 
 
 
 @tool
-def get_blocking_transactions(namespace: str = "default") -> str:
+def get_blocking_transactions() -> str:
     """Finds transactions currently blocking other transactions, with the
     blocking PID, blocked PID, and how long the blocker has held its lock.
     This is the authoritative check for the lock-contention scenario — if this
@@ -394,10 +306,9 @@ def get_blocking_transactions(namespace: str = "default") -> str:
     JOIN pg_stat_activity blocking ON blocking.pid = b.pid;
     """
     try:
-        result = run_psql(query, namespace)
+        result = run_psql(query)
     except Exception as e:
         return f"Error executing diagnostic query: {e}"
-    # With -t (tuples only) psql prints no "(0 rows)" footer, so empty output == no rows.
     if not result.strip():
         return "No blocking transactions found — no lock contention detected at this time."
     return "blocked_pid | blocked_query | blocking_pid | blocking_query | blocking_duration\n" + result
