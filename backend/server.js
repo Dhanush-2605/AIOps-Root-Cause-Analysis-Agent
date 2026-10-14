@@ -78,6 +78,13 @@ const httpRequestDuration = new promClient.Histogram({
     registers: [register]
 });
 
+const httpRequestsTotal = new promClient.Counter({
+    name: 'http_requests_total',
+    help: 'Total HTTP requests',
+    labelNames: ['method', 'route', 'status'],
+    registers: [register]
+});
+
 app.get('/metrics', async (req, res) => {
     res.set('Content-Type', register.contentType);
     res.end(await register.metrics());
@@ -88,13 +95,18 @@ app.use((req, res, next) => {
     const start = process.hrtime.bigint();
     res.on('finish', () => {
         const durationSec = Number(process.hrtime.bigint() - start) / 1e9;
+        const route = req.route?.path || 'unmatched';
+
         httpRequestDuration.observe(
-            { method: req.method, route: req.route?.path || req.path, status_code: res.statusCode },
+            { method: req.method, route, status_code: res.statusCode },
             durationSec
         );
+        httpRequestsTotal.inc({ method: req.method, route, status: res.statusCode });  // NEW
     });
     next();
 });
+
+
 
 // ---- Poll activeRequests every 5s and update the gauge ----
 // This is what turns your existing tracking Map into something Prometheus can alert on

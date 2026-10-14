@@ -313,10 +313,9 @@ def get_blocking_transactions() -> str:
         return "No blocking transactions found — no lock contention detected at this time."
     return "blocked_pid | blocked_query | blocking_pid | blocking_query | blocking_duration\n" + result
 
-
-def _query_prometheus_range(promql: str, window_minutes: int, step: str = "30s") -> str:
-    """Internal helper — runs a PromQL range query over the trailing window_minutes.
-    Not a tool itself; called by get_memory_trend."""
+def _query_prometheus_range(promql: str, window_minutes: int, step: str = "30s",
+                            in_mib: bool = False) -> str:
+    """Runs a PromQL range query and returns a short summary per series."""
     try:
         end = time.time()
         start = end - (window_minutes * 60)
@@ -328,26 +327,26 @@ def _query_prometheus_range(promql: str, window_minutes: int, step: str = "30s")
         resp.raise_for_status()
         results = resp.json().get("data", {}).get("result", [])
         if not results:
-            return f"No data for range query: {promql}"
+            return "NO DATA (metric missing or filter matched nothing, not necessarily zero)"
+
+        def fmt(v):
+            return f"{v / 1048576:.0f}MiB" if in_mib else f"{v:.2f}"
 
         lines = []
         for series in results:
-            metric_label = series.get("metric", {})
-            values = series.get("values", [])
-            if not values:
+            nums = [float(v[1]) for v in series.get("values", [])]
+            if not nums:
                 continue
-            nums = [float(v[1]) for v in values]
             lines.append(
-                f"{metric_label}: first={values[0][1]} last={values[-1][1]} "
-                f"min={min(nums)} max={max(nums)} (n={len(nums)} points over {window_minutes}m)"
+                f"first={fmt(nums[0])} last={fmt(nums[-1])} "
+                f"min={fmt(min(nums))} max={fmt(max(nums))}"
             )
-        return "\n".join(lines) if lines else f"No data points for range query: {promql}"
+        return "\n".join(lines) or "NO DATA"
     except Exception as e:
-        return f"Prometheus range query failed: {str(e)}"
-
+        return f"Prometheus query failed: {e}"
 
 @tool
-def get_memory_trend(pod_name: str, namespace: str = "default", window_minutes: int = 30) -> str:
+def get_memory_trend(pod_name: str, namespace: str = "default", window_minutes: int = 15) -> str:
     """Returns RAM usage for a pod over the trailing window, alongside request
     rate for the same window, so growth can be judged against load rather than
     in isolation. Use this to distinguish genuine memory need (grows with load,
@@ -355,13 +354,38 @@ def get_memory_trend(pod_name: str, namespace: str = "default", window_minutes: 
     if not _SAFE_NAME.match(pod_name or ""):
         return f"Error: invalid pod_name '{pod_name}'."
 
-    mem_query = f'container_memory_working_set_bytes{{pod="{pod_name}"}}'
-    load_query = f'sum(rate(http_requests_total{{pod="{pod_name}"}}[5m]))'
-    mem_result = _query_prometheus_range(mem_query, window_minutes)
-    load_result = _query_prometheus_range(load_query, window_minutes)
-    return f"Memory trend:\n{mem_result}\n\nRequest rate over same window:\n{load_result}"
+    sel = f'pod="{pod_name}",namespace="{namespace}"'
 
+    # Only the app container, not the pod cgroup or pause container
+    mem_query = f'container_memory_working_set_bytes{{{sel},container="backend"}}'
 
+    # Works with either metric; the first is used if it exists
+    load_query = (
+        f'sum(rate(http_requests_total{{{sel}}}[1m])) '
+        f'or sum(rate(http_request_duration_seconds_count{{{sel}}}[1m]))'
+    )
+
+    # Your own leak-vs-load gauges
+    buffers_query = f'app_unbounded_buffers_total{{{sel}}}'
+    cache_query = f'app_bounded_cache_entries{{{sel}}}'
+    
+    
+    load = _query_prometheus_range(load_query, window_minutes)
+    mem = _query_prometheus_range(mem_query, window_minutes, in_mib=True)
+    buffers = _query_prometheus_range(buffers_query, window_minutes)
+    cache = _query_prometheus_range(cache_query, window_minutes)
+
+    return (
+        f"Request rate (req/s):\n{load}\n\n"
+        f"Memory:\n{mem}\n\n"
+        f"Unbounded buffers (leak indicator):\n{buffers}\n\n"
+        f"Bounded cache entries (genuine-load indicator):\n{cache}"
+    )
+        
+    
+    
+    
+    
 # Everything the investigator is allowed to call. All read-only.
 INVESTIGATION_TOOLS = [
     fetch_filtered_pod_logs,

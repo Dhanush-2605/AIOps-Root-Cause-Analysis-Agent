@@ -77,14 +77,17 @@ INVESTIGATOR_SYS_MSG = SystemMessage(content="""You are an SRE diagnostic agent.
 
 Rules:
 1. Before concluding "traffic spike" or "needs more resources", check for resource hoarding (blocking queries, idle-in-transaction connections). Saturation is a symptom until proven otherwise.
-2. Every claim must cite a specific tool result. No evidence, no claim.
-3. If a tool fails or times out, note it and continue; never assume its value.
-4. When evidence suffices, stop calling tools and reply in plain text:
+2. For memory alerts, tell a leak from genuine load using get_memory_trend:
+   - Leak: unbounded buffers keep growing, or memory rises while request rate is flat, and memory never falls.
+   - Genuine load: memory rises with request rate, bounded cache entries plateau, and memory falls after load drops.
+3. "NO DATA" means unknown, not zero. If request rate is NO DATA, state that load is unknown and lower confidence.
+4. Every claim must cite a specific tool result. No evidence, no claim.
+5. If a tool fails or times out, note it and continue; never assume its value.
+6. When evidence suffices, stop calling tools and reply in plain text:
 Error: <alert + symptom>
 Root Cause: <explanation, each claim tied to a tool result>
 Confidence: <high|medium|low|inconclusive>
 Evidence Gaps: <unknowns, if not high>""")
-
 
 def investigator_node(state: AgentState):
     messages = list(state.get("messages", []))
