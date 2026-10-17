@@ -365,12 +365,10 @@ def _run_action(action, v1_api, apps_v1_api) -> str:
             name=target, namespace=ns, command=exec_cmd,
             stderr=True, stdin=False, stdout=True, tty=False,
         )
-        if '"status":"success"' not in resp:
-            raise RuntimeError(f"Abort call to '{target}' did not confirm success (got: '{resp[:200]}')")
+        # stream() may return a Python-style dict string (single quotes), so match loosely
+        if "success" not in str(resp):
+            raise RuntimeError(f"Abort did not confirm success: {str(resp)[:200]}")
         return f"[SUCCESS] Aborted requests exceeding {threshold}s on '{target}': {resp}"
-
-    return f"[WARNING] Action type '{action_type}' is not implemented in the executor."
-
 
 def executor_node(state: AgentState):
     """Executes actions via K8s SDK behind a single human-in-the-loop approval."""
