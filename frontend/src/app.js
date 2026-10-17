@@ -80,7 +80,7 @@ async function fireStaggeredBurst(
 // `expectedAlertName` is only used to color-match once the real alert
 // shows up in the Alerts tab, not to fire anything itself.
 // ==========================================
-// const SCENARIOS = [
+const SCENARIOS = [
 //   {
 //     id: "hanging-request",
 //     label: "Hanging 3rd-Party Request",
@@ -122,7 +122,7 @@ async function fireStaggeredBurst(
 //       }).catch(() => {});
 //     },
 //   }
-// ];
+];
 
 const ACCENTS = {
   amber: { text: "text-amber-400", bg: "bg-amber-500/10", dot: "bg-amber-400" },
