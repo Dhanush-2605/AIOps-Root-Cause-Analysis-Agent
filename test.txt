@@ -86,3 +86,9 @@ kubectl exec <postgres-pod> -- rm /var/lib/postgresql/data/filler.bin
 
 
 
+curl -s -X POST http://20.244.79.163:3000/api/orders/lock-row -H 'Content-Type: application/json' -d '{"orderId":1}'
+
+
+
+for i in 1 2 3; do curl -s -X POST http://20.244.79.163:3000/api/orders/checkout-slow -H 'Content-Type: application/json' -d '{"orderId":1}' & done
+

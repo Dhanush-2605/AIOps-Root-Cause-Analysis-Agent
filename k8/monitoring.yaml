@@ -66,14 +66,6 @@ spec:
       annotations:
         summary: "Postgres running out of connections"
   
-    - alert: PostgresIdleInTransaction
-      expr: sum(pg_stat_activity_count{state="idle in transaction"}) > 0
-      for: 15s
-      labels: { severity: warning }
-      annotations:
-        summary: "PostgreSQL session idle in transaction"
-        description: "{{ $value }} session(s) idle in transaction for over 15s. Possible uncommitted transaction holding a lock."
-
     - alert: PostgresLockWaitersDetected
       expr: sum(pg_stat_activity_count{wait_event_type="Lock"}) > 0
       for: 30s
