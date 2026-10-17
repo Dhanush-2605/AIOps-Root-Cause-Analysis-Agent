@@ -161,7 +161,7 @@ PROPOSER_SYS_MSG = SystemMessage(content="""You are an SRE remediation expert. R
 Priority: a HUMAN OPERATOR OVERRIDE in the prompt is the main directive. It beats every rule below and your own analysis (latest line wins). Format the requested action exactly, even if the diagnosis is inconclusive. Only limits: action_type must be a valid option, and reasoning must be honest and say the action is operator-directed.
 
 Prefer the lowest-impact action that fixes the root cause:
-low: kill_idle_transaction, abort_hanging_requests | medium: restart_deployment, scale_deployment | last resort: delete_pod, increase_memory_limit, increase_cpu_limit.
+low: kill_blocking_transaction, abort_hanging_requests | medium: restart_deployment, scale_deployment | last resort: delete_pod, increase_memory_limit, increase_cpu_limit.
 Never raise resource limits if a blocking process, leaked connection or hoarding query was found; kill it instead.
 For a confirmed memory leak (buffers growing, memory never falls), prefer restart_deployment. Raising the limit only delays the next failure. Use increase_memory_limit only for genuine load.
 
@@ -169,7 +169,7 @@ Rules:
 - No clear root cause: return empty proposed_actions with confidence "inconclusive". Don't guess.
 - Each action's reasoning must cite specific investigation evidence.
 - Every action that needs a value must include it, taken from the evidence:
-  - kill_idle_transaction: value = numeric PID; target_name = the postgres pod.
+  - kill_blocking_transaction: value = numeric PID; target_name = the postgres pod.
   - abort_hanging_requests: value = age threshold in seconds (use 10 unless evidence says otherwise); target_name = the backend pod.
   - increase_memory_limit: value = new limit in Mi, e.g. "768Mi". Use about 1.5x the current limit, never more than 2x. target_name = the deployment.
   - increase_cpu_limit: value = new limit in millicores, e.g. "600m". Use about 1.5x the current limit, never more than 2x. target_name = the deployment.
@@ -239,7 +239,7 @@ CRITIC_SYS_MSG = SystemMessage(content=f"""You are a strict Kubernetes safety cr
 Reject (is_safe=false, with specific feedback) if any holds:
 - an action lacks support in the investigation evidence
 - memory/cpu limit increase or scale_deployment despite a found blocking / idle-in-transaction / hoarding query
-- kill_idle_transaction value isn't a numeric PID from the evidence
+- kill_blocking_transaction value isn't a numeric PID from the evidence
 - scale to 0 replicas, or delete_pod on a database pod
 - a higher-impact action is used where a lower-impact one would do
 Otherwise approve.
@@ -386,7 +386,7 @@ def _run_action(action, v1_api, apps_v1_api) -> str:
         output_logs += f"\n[SUCCESS] Increased CPU limit for '{target}' (container: {actual_container_name}) to {val}"
         print(f"   └─ ✅ CPU limit increased on container '{actual_container_name}'.")
 
-    if action_type == "kill_idle_transaction":
+    if action_type == "kill_blocking_transaction":
         pid = int(val)  # fail loud on a non-numeric value instead of exec'ing garbage SQL
         resp = run_psql(f"SELECT pg_terminate_backend({pid});", ns).strip().lower()
         if resp not in ("t", "true"):

@@ -13,7 +13,7 @@ class K8sAction(BaseModel):
         "restart_deployment",
         "increase_memory_limit",
         "increase_cpu_limit",
-        "kill_idle_transaction",
+        "kill_blocking_transaction",
         "abort_hanging_requests",
     ] = Field(..., description="Action to execute; must be one of the permitted options.")
 
@@ -27,7 +27,7 @@ class K8sAction(BaseModel):
             "scale_deployment: replica count, e.g. '2'. "
             "increase_memory_limit: e.g. '768Mi'. "
             "increase_cpu_limit: e.g. '600m'. "
-            "kill_idle_transaction: numeric PID from the investigation, e.g. '4521'. "
+            "kill_blocking_transaction: numeric PID from the investigation, e.g. '4521'. "
             "abort_hanging_requests: age threshold in seconds, e.g. '10'. "
             "Otherwise null."
         ),
