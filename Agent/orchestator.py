@@ -331,8 +331,10 @@ def _run_action(action, v1_api, apps_v1_api) -> str:
     if action_type == "restart_deployment":
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         body = {"spec": {"template": {"metadata": {"annotations": {"kubectl.kubernetes.io/restartedAt": now}}}}}
+        
         apps_v1_api.patch_namespaced_deployment(name=target, namespace=ns, body=body)
-        return f"[SUCCESS] Restarted deployment '{target}' in '{ns}'"
+        output_logs += f"\n[SUCCESS] Restarted deployment '{target}' in '{ns}'"
+        return f"   └─ ✅ Deployment restart triggered."
 
     if action_type == "scale_deployment":
         replicas = int(val)  # raises on garbage
@@ -342,18 +344,52 @@ def _run_action(action, v1_api, apps_v1_api) -> str:
         return f"[SUCCESS] Scaled deployment '{target}' to {replicas}"
 
     if action_type == "increase_memory_limit":
-        cname = _patch_container_limit(apps_v1_api, target, ns, "memory", val)
-        return f"[SUCCESS] Increased memory limit for '{target}' (container: {cname}) to {val}"
+        deployment = apps_v1_api.read_namespaced_deployment(name=target, namespace=ns)
+        actual_container_name = deployment.spec.template.spec.containers[0].name
+        body = {
+                    "spec": {
+                        "template": {
+                            "spec": {
+                                "containers": [
+                                    {
+                                        "name": actual_container_name,
+                                        "resources": {"limits": {"memory": str(val)}}
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+        apps_v1_api.patch_namespaced_deployment(name=target, namespace=ns, body=body)
+        output_logs += f"\n[SUCCESS] Increased memory limit for '{target}' (container: {actual_container_name}) to {val}"
+        print(f"   └─ ✅ Memory limit increased on container '{actual_container_name}'.")
 
     if action_type == "increase_cpu_limit":
-        cname = _patch_container_limit(apps_v1_api, target, ns, "cpu", val)
-        return f"[SUCCESS] Increased CPU limit for '{target}' (container: {cname}) to {val}"
+        deployment = apps_v1_api.read_namespaced_deployment(name=target, namespace=ns)
+        actual_container_name = deployment.spec.template.spec.containers[0].name
+        
+        body = {
+                    "spec": {
+                        "template": {
+                            "spec": {
+                                "containers": [
+                                    {
+                                        "name": actual_container_name,
+                                        "resources": {"limits": {"cpu": str(val)}}
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+        apps_v1_api.patch_namespaced_deployment(name=target, namespace=ns, body=body)
+        output_logs += f"\n[SUCCESS] Increased CPU limit for '{target}' (container: {actual_container_name}) to {val}"
+        print(f"   └─ ✅ CPU limit increased on container '{actual_container_name}'.")
 
     if action_type == "kill_idle_transaction":
         pid = int(val)  # fail loud on a non-numeric value instead of exec'ing garbage SQL
-        # Locates the postgres pod itself, so a wrong target_name from the LLM can't misdirect it
         resp = run_psql(f"SELECT pg_terminate_backend({pid});", ns).strip().lower()
-        if resp != "t":
+        if resp not in ("t", "true"):
             raise RuntimeError(f"pg_terminate_backend({pid}) did not return true (got: '{resp}'); PID may be gone")
         return f"[SUCCESS] Terminated backend PID {pid}"
 
