@@ -302,9 +302,9 @@ def critic_router(state: AgentState):
     return "proposer_node"
 
 
-# ---------------------------------------------------------------------------
 # 4. Executor (HITL + K8s SDK)
-# ---------------------------------------------------------------------------
+
+
 def _patch_container_limit(apps_v1_api, name: str, namespace: str, resource: str, value: str) -> str:
     """Patches the first container of a Deployment with a new resource limit.
     Returns the container name that was patched."""
@@ -331,10 +331,8 @@ def _run_action(action, v1_api, apps_v1_api) -> str:
     if action_type == "restart_deployment":
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         body = {"spec": {"template": {"metadata": {"annotations": {"kubectl.kubernetes.io/restartedAt": now}}}}}
-        
         apps_v1_api.patch_namespaced_deployment(name=target, namespace=ns, body=body)
-        output_logs += f"\n[SUCCESS] Restarted deployment '{target}' in '{ns}'"
-        return f"   └─ ✅ Deployment restart triggered."
+        return f"[SUCCESS] Restarted deployment '{target}' in '{ns}'"
 
     if action_type == "scale_deployment":
         replicas = int(val)  # raises on garbage
@@ -344,49 +342,14 @@ def _run_action(action, v1_api, apps_v1_api) -> str:
         return f"[SUCCESS] Scaled deployment '{target}' to {replicas}"
 
     if action_type == "increase_memory_limit":
-        deployment = apps_v1_api.read_namespaced_deployment(name=target, namespace=ns)
-        actual_container_name = deployment.spec.template.spec.containers[0].name
-        body = {
-                    "spec": {
-                        "template": {
-                            "spec": {
-                                "containers": [
-                                    {
-                                        "name": actual_container_name,
-                                        "resources": {"limits": {"memory": str(val)}}
-                                    }
-                                ]
-                            }
-                        }
-                    }
-                }
-        apps_v1_api.patch_namespaced_deployment(name=target, namespace=ns, body=body)
-        output_logs += f"\n[SUCCESS] Increased memory limit for '{target}' (container: {actual_container_name}) to {val}"
-        print(f"   └─ ✅ Memory limit increased on container '{actual_container_name}'.")
+        cname = _patch_container_limit(apps_v1_api, target, ns, "memory", str(val))
+        return f"[SUCCESS] Increased memory limit for '{target}' (container: {cname}) to {val}"
 
     if action_type == "increase_cpu_limit":
-        deployment = apps_v1_api.read_namespaced_deployment(name=target, namespace=ns)
-        actual_container_name = deployment.spec.template.spec.containers[0].name
-        
-        body = {
-                    "spec": {
-                        "template": {
-                            "spec": {
-                                "containers": [
-                                    {
-                                        "name": actual_container_name,
-                                        "resources": {"limits": {"cpu": str(val)}}
-                                    }
-                                ]
-                            }
-                        }
-                    }
-                }
-        apps_v1_api.patch_namespaced_deployment(name=target, namespace=ns, body=body)
-        output_logs += f"\n[SUCCESS] Increased CPU limit for '{target}' (container: {actual_container_name}) to {val}"
-        print(f"   └─ ✅ CPU limit increased on container '{actual_container_name}'.")
+        cname = _patch_container_limit(apps_v1_api, target, ns, "cpu", str(val))
+        return f"[SUCCESS] Increased CPU limit for '{target}' (container: {cname}) to {val}"
 
-    if action_type == "kill_blocking_transaction":
+    if action_type in ("kill_idle_transaction", "kill_blocking_transaction"):
         pid = int(val)  # fail loud on a non-numeric value instead of exec'ing garbage SQL
         resp = run_psql(f"SELECT pg_terminate_backend({pid});", ns).strip().lower()
         if resp not in ("t", "true"):
@@ -405,6 +368,10 @@ def _run_action(action, v1_api, apps_v1_api) -> str:
         if "success" not in str(resp):
             raise RuntimeError(f"Abort did not confirm success: {str(resp)[:200]}")
         return f"[SUCCESS] Aborted requests exceeding {threshold}s on '{target}': {resp}"
+
+    raise NotImplementedError(f"Action type '{action_type}' is not implemented in the executor.")
+
+
 
 def executor_node(state: AgentState):
     """Executes actions via K8s SDK behind a single human-in-the-loop approval."""
