@@ -24,8 +24,11 @@ class K8sAction(BaseModel):
     value: Optional[str] = Field(
         None,
         description=(
-            "Scale/limits: '3' or '512Mi'. kill_idle_transaction: numeric PID from the "
-            "investigation (e.g. '4521'). abort_hanging_requests: max seconds (e.g. '30'). "
+            "scale_deployment: replica count, e.g. '2'. "
+            "increase_memory_limit: e.g. '768Mi'. "
+            "increase_cpu_limit: e.g. '600m'. "
+            "kill_idle_transaction: numeric PID from the investigation, e.g. '4521'. "
+            "abort_hanging_requests: age threshold in seconds, e.g. '10'. "
             "Otherwise null."
         ),
     )

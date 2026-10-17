@@ -21,7 +21,6 @@ import {
   GitPullRequest,
 } from "lucide-react";
 
-// The Node.js backend under test — NOT the Python agent (that's :8080,
 // used only for /alert, /alerts, /incidents, /approve below).
 // Both backends are reached through nginx as relative paths, not absolute
 // localhost URLs — the browser loads this dashboard from wherever it's
@@ -81,99 +80,49 @@ async function fireStaggeredBurst(
 // `expectedAlertName` is only used to color-match once the real alert
 // shows up in the Alerts tab, not to fire anything itself.
 // ==========================================
-const SCENARIOS = [
-  {
-    id: "hanging-request",
-    label: "Hanging 3rd-Party Request",
-    description: "Payment call exceeds 30s, never returns",
-    icon: Zap,
-    accent: "amber",
-    expectedAlertName: "HangingRequestsDetected",
-    run: async () => {
-      // Fire-and-forget: this call genuinely takes ~60s to resolve. We
-      // don't await it so the UI isn't blocked, but the request really is
-      // sitting there in Node's activeRequests map for Prometheus to see.
-      fetch(`${NODE_BASE_URL}/api/payments/process`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      }).catch(() => {});
-    },
-  },
-  {
-    id: "blocking-transaction",
-    label: "Blocking DB Transaction",
-    description: "Row lock held open, checkout stalls behind it",
-    icon: Lock,
-    accent: "violet",
-    expectedAlertName: "DatabaseLockContentionDetected",
-    run: async () => {
-      // Must complete first — this is the call that actually acquires and
-      // holds the lock (its transaction is left open on purpose).
-      await fetch(`${NODE_BASE_URL}/api/orders/lock-row`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderId: 1 }),
-      }).catch(() => {});
-      // This one will genuinely block behind the lock above — don't await it.
-      fetch(`${NODE_BASE_URL}/api/orders/checkout-slow`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderId: 1 }),
-      }).catch(() => {});
-    },
-  },
-  {
-    id: "memory-genuine",
-    label: "Genuine Memory Demand",
-    description: "Cache growing with load, expected to plateau",
-    icon: Gauge,
-    accent: "teal",
-    expectedAlertName: "PodMemoryNearLimit",
-    run: async () => {
-      // 20 requests every 750ms → 400 total over ~15s. That window matters:
-      // it's long enough to span at least one Prometheus scrape interval
-      // (yours is 15s) while memory is elevated, so the alert actually has
-      // real data to fire on, not just a blip between scrapes.
-      await fireStaggeredBurst(
-        `${NODE_BASE_URL}/api/catalog/lookup`,
-        420,
-        (i) => ({ itemId: i % 4000 }),
-        { batchSize: 20, intervalMs: 1000 },
-      );
-    },
-  },
-  {
-    id: "memory-leak",
-    label: "Memory Leak",
-    description: "Unbounded growth, load-independent, no plateau",
-    icon: Droplets,
-    accent: "rose",
-    expectedAlertName: "PodMemoryNearLimit",
-    run: async () => {
-      await fireStaggeredBurst(
-        `${NODE_BASE_URL}/api/reports/export`,
-        400,
-        (i) => ({ reportId: i }),
-        { batchSize: 20, intervalMs: 750 },
-      );
-    },
-  },
-
-  {
-    id: "memory-leak",
-    label: "Memory Leak",
-    description: "Unbounded growth, load-independent, no plateau",
-    icon: Droplets,
-    accent: "rose",
-    expectedAlertName: "PodMemoryNearLimit",
-    run: async () => {
-      await fireBurst(`${NODE_BASE_URL}/api/reports/export`, 400, (i) => ({
-        reportId: i,
-      }));
-    },
-  },
-];
+// const SCENARIOS = [
+//   {
+//     id: "hanging-request",
+//     label: "Hanging 3rd-Party Request",
+//     description: "Payment call exceeds 30s, never returns",
+//     icon: Zap,
+//     accent: "amber",
+//     expectedAlertName: "HangingRequestsDetected",
+//     run: async () => {
+//       // Fire-and-forget: this call genuinely takes ~60s to resolve. We
+//       // don't await it so the UI isn't blocked, but the request really is
+//       // sitting there in Node's activeRequests map for Prometheus to see.
+//       fetch(`${NODE_BASE_URL}/api/payments/process`, {
+//         method: "POST",
+//         headers: { "Content-Type": "application/json" },
+//         body: "{}",
+//       }).catch(() => {});
+//     },
+//   },
+//   {
+//     id: "blocking-transaction",
+//     label: "Blocking DB Transaction",
+//     description: "Row lock held open, checkout stalls behind it",
+//     icon: Lock,
+//     accent: "violet",
+//     expectedAlertName: "DatabaseLockContentionDetected",
+//     run: async () => {
+//       // Must complete first — this is the call that actually acquires and
+//       // holds the lock (its transaction is left open on purpose).
+//       await fetch(`${NODE_BASE_URL}/api/orders/lock-row`, {
+//         method: "POST",
+//         headers: { "Content-Type": "application/json" },
+//         body: JSON.stringify({ orderId: 1 }),
+//       }).catch(() => {});
+//       // This one will genuinely block behind the lock above — don't await it.
+//       fetch(`${NODE_BASE_URL}/api/orders/checkout-slow`, {
+//         method: "POST",
+//         headers: { "Content-Type": "application/json" },
+//         body: JSON.stringify({ orderId: 1 }),
+//       }).catch(() => {});
+//     },
+//   }
+// ];
 
 const ACCENTS = {
   amber: { text: "text-amber-400", bg: "bg-amber-500/10", dot: "bg-amber-400" },

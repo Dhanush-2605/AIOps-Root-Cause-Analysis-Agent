@@ -23,7 +23,7 @@ export const options = {
 };
 
 export default function () {
-  const url = 'http://20.219.215.58:3000/api/catalog/lookup';
+  const url = 'http://20.244.79.163:3000/api/catalog/lookup';
   const itemId = scenario.iterationInTest + 1; // unique every time
 
   const res = http.post(url, JSON.stringify({ itemId }), {

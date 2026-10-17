@@ -125,10 +125,10 @@ def run_psql(query: str, params: Optional[tuple] = None) -> str:
 # Investigation tools (read-only)
 # ---------------------------------------------------------------------------
 @tool
-def fetch_filtered_pod_logs(namespace: str, pod_name: str, tail_lines: int = 100) -> str:
+def fetch_filtered_pod_logs(namespace: str, pod_name: str, tail_lines: int = 300) -> str:
     """
-    Fetches the most recent logs from a specific pod and filters for errors.
-    Use this tool when you need to see why a specific pod is crashing or failing.
+    Fetches recent logs from a pod and filters for errors, hangs and aborts.
+    Use this to see why a pod is failing, timing out or hanging.
 
     Args:
         namespace: The Kubernetes namespace (e.g., 'default').
@@ -139,15 +139,17 @@ def fetch_filtered_pod_logs(namespace: str, pod_name: str, tail_lines: int = 100
         v1_api, _ = get_gke_client()
         logs = v1_api.read_namespaced_pod_log(name=pod_name, namespace=namespace, tail_lines=tail_lines)
 
-        error_patterns = re.compile(r"(error|fatal|exception|fail|timeout|oomkilled|denied)", re.IGNORECASE)
-        filtered_logs = [line for line in logs.split("\n") if error_patterns.search(line)]
+        patterns = re.compile(
+            r"(error|fatal|exception|fail|timeout|hang|abort|oomkilled|denied)", re.IGNORECASE
+        )
+        filtered = [line for line in logs.split("\n") if patterns.search(line)]
 
-        if not filtered_logs:
+        if not filtered:
             return (
-                f"Logs fetched successfully. No explicit error keywords found in the last "
-                f"{tail_lines} lines. The pod might be stuck rather than crashing."
+                f"No error, timeout, hang or abort lines in the last {tail_lines} log lines. "
+                f"This does not rule out a problem: check the other tools' results."
             )
-        return "Filtered Error Logs:\n" + "\n".join(filtered_logs)
+        return f"Matching log lines (last {tail_lines} lines):\n" + "\n".join(filtered[-30:])
 
     except ApiException as e:
         return _k8s_error(e, f"fetching logs for pod {pod_name}")

@@ -80,14 +80,19 @@ Rules:
 2. For memory alerts, tell a leak from genuine load using get_memory_trend:
    - Leak: unbounded buffers keep growing, or memory rises while request rate is flat, and memory never falls.
    - Genuine load: memory rises with request rate, bounded cache entries plateau, and memory falls after load drops.
-3. "NO DATA" means unknown, not zero. If request rate is NO DATA, state that load is unknown and lower confidence.
-4. Every claim must cite a specific tool result. No evidence, no claim.
-5. If a tool fails or times out, note it and continue; never assume its value.
-6. When evidence suffices, stop calling tools and reply in plain text:
+3. For hanging-request or timeout alerts, call fetch_hanging_requests and fetch_filtered_pod_logs:
+   - A non-empty hanging-requests list (endpoint and age) is direct evidence. Report that endpoint as hanging.
+   - A log line like "Request exceeded hang threshold" is also direct evidence, even if the list is now empty, because the request may have already ended or been aborted.
+   - An empty list with no such log line means no hang was observed. It does not mean the cause is unknown.
+4. "NO DATA" means unknown, not zero. If request rate is NO DATA, state that load is unknown and lower confidence.
+5. Every claim must cite a specific tool result. No evidence, no claim.
+6. If a tool fails or times out, note it and continue; never assume its value.
+7. When evidence suffices, stop calling tools and reply in plain text. Use "inconclusive" only when no tool returned direct evidence; if you have any, give the root cause and lower the confidence instead.
 Error: <alert + symptom>
 Root Cause: <explanation, each claim tied to a tool result>
 Confidence: <high|medium|low|inconclusive>
 Evidence Gaps: <unknowns, if not high>""")
+
 
 def investigator_node(state: AgentState):
     messages = list(state.get("messages", []))
@@ -149,9 +154,8 @@ def investigator_node(state: AgentState):
     }
 
 
-# ---------------------------------------------------------------------------
 # 2. Proposer
-# ---------------------------------------------------------------------------
+
 PROPOSER_SYS_MSG = SystemMessage(content="""You are an SRE remediation expert. Return a RemediationPlan.
 
 Priority: a HUMAN OPERATOR OVERRIDE in the prompt is the main directive. It beats every rule below and your own analysis (latest line wins). Format the requested action exactly, even if the diagnosis is inconclusive. Only limits: action_type must be a valid option, and reasoning must be honest and say the action is operator-directed.
@@ -159,11 +163,18 @@ Priority: a HUMAN OPERATOR OVERRIDE in the prompt is the main directive. It beat
 Prefer the lowest-impact action that fixes the root cause:
 low: kill_idle_transaction, abort_hanging_requests | medium: restart_deployment, scale_deployment | last resort: delete_pod, increase_memory_limit, increase_cpu_limit.
 Never raise resource limits if a blocking process, leaked connection or hoarding query was found; kill it instead.
+For a confirmed memory leak (buffers growing, memory never falls), prefer restart_deployment. Raising the limit only delays the next failure. Use increase_memory_limit only for genuine load.
 
 Rules:
 - No clear root cause: return empty proposed_actions with confidence "inconclusive". Don't guess.
 - Each action's reasoning must cite specific investigation evidence.
-- kill_idle_transaction: value = numeric PID from the evidence; target_name = the postgres pod.
+- Every action that needs a value must include it, taken from the evidence:
+  - kill_idle_transaction: value = numeric PID; target_name = the postgres pod.
+  - abort_hanging_requests: value = age threshold in seconds (use 10 unless evidence says otherwise); target_name = the backend pod.
+  - increase_memory_limit: value = new limit in Mi, e.g. "768Mi". Use about 1.5x the current limit, never more than 2x. target_name = the deployment.
+  - increase_cpu_limit: value = new limit in millicores, e.g. "600m". Use about 1.5x the current limit, never more than 2x. target_name = the deployment.
+  - scale_deployment: value = target replica count, current + 1 at most; target_name = the deployment.
+- If an action needs the current limit or replica count and the evidence doesn't contain it, return empty proposed_actions with confidence "low" and say which value is missing. Never invent the current value.
 - After a failed verification, don't repeat the same action_type on the same target; propose an alternative, or return empty with confidence "low".""")
 
 
@@ -347,13 +358,15 @@ def _run_action(action, v1_api, apps_v1_api) -> str:
         return f"[SUCCESS] Terminated backend PID {pid}"
 
     if action_type == "abort_hanging_requests":
-        threshold = int(val or 30)
+        threshold = int(val or 10)
         exec_cmd = ["curl", "-s", "-X", "POST", f"http://127.0.0.1:3000/admin/requests/abort?threshold={threshold}"]
         resp = stream(
             v1_api.connect_get_namespaced_pod_exec,
             name=target, namespace=ns, command=exec_cmd,
             stderr=True, stdin=False, stdout=True, tty=False,
         )
+        if '"status":"success"' not in resp:
+            raise RuntimeError(f"Abort call to '{target}' did not confirm success (got: '{resp[:200]}')")
         return f"[SUCCESS] Aborted requests exceeding {threshold}s on '{target}': {resp}"
 
     return f"[WARNING] Action type '{action_type}' is not implemented in the executor."
@@ -462,9 +475,21 @@ def _parse_ts(value: str) -> datetime:
     return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
 
 
+def _fmt_duration(seconds: int) -> str:
+    m, s = divmod(max(seconds, 0), 60)
+    return f"{m}m {s}s" if m else f"{s}s"
+
+
+OUTCOMES = {
+    "execute": "Remediation executed",
+    "abort": "Not remediated (operator aborted, or no safe action was proposed)",
+    "replan": "Plan revised by operator feedback",
+}
+
+
 def reporter_node(state: AgentState):
-    """Generates a concise, actionable SRE Post-Mortem or Human Handoff report."""
-    print("\n📝 [REPORTER] Generating concise SRE Post-Mortem...")
+    """Generates a structured incident report for later reference."""
+    print("\n[REPORTER] Generating incident report...")
 
     alert = state.get("alert_payload", {})
     context = state.get("context_gathered", "")
@@ -476,40 +501,69 @@ def reporter_node(state: AgentState):
 
     now = datetime.now(timezone.utc)
     end_time_str = now.isoformat()
+    start_str = state.get("incident_start_time", end_time_str)
     try:
-        mttr_seconds = int((now - _parse_ts(state.get("incident_start_time", end_time_str))).total_seconds())
+        duration_seconds = int((now - _parse_ts(start_str)).total_seconds())
     except Exception:
-        mttr_seconds = 0
+        duration_seconds = 0
 
     alert_name = _alert_name(alert)
     labels = alert.get("labels", {})
     target = labels.get("deployment") or labels.get("pod", "UnknownResource")
 
-    prompt = f"""Write a concise SRE incident hand-off in Markdown. Bullets, exact technical details, no fluff.
+    # Header is built in code so the facts are exact and never rewritten by the LLM
+    header = f"""# Incident Report: {alert_name}
 
-Alert: {alert_name} | Target: {target} | State: {hitl_route.upper()} (execute=fix applied, abort=human stopped it, replan=human changed the plan) | MTTR: {mttr_seconds}s
-Findings: {context}
+| Field | Value |
+|---|---|
+| Alert | {alert_name} |
+| Target | {target} |
+| Severity label | {labels.get("severity", "unknown")} |
+| Incident start (UTC) | {start_str} |
+| Report generated (UTC) | {end_time_str} |
+| Duration (alert to report) | {_fmt_duration(duration_seconds)} |
+| Outcome | {OUTCOMES.get(hitl_route, hitl_route)} |
+
+---
+"""
+
+    prompt = f"""Write the body of a formal SRE incident report in Markdown, for future reference by engineers who were not present.
+
+Rules:
+- Use only facts present in the inputs below. If something is not in the inputs, write "Not available". Never infer or invent values.
+- Plain professional tone. No emojis, no decorative symbols, no title (a header table is added separately).
+- Quote exact technical details: metric values, PIDs, endpoint names, error lines.
+- Past tense for what happened, imperative for follow-up actions.
+
+Inputs
+Alert: {alert_name} | Target: {target} | Route: {hitl_route} (execute = fix applied, abort = operator stopped it or no safe action, replan = operator changed the plan)
+Investigation findings: {context}
 Proposed plan: {_plan_json(plan)}
 Critic feedback: {critic_feedback}
-Human feedback: {human_feedback}
-Execution: {logs}
+Operator feedback: {human_feedback}
+Execution log: {logs}
 
-Use exactly these sections:
-## 🚨 Incident Summary
-(1-2 sentences: what broke, final state)
-## 🤖 AI Diagnosis & Proposed Actions
-## 👤 Human Intervention
-(abort / feedback given / "Approved without modification")
-## 🔧 Execution Status
-(NO EXECUTION if aborted)
-## 🔎 Actionable Handoff
-(If aborted, unresolved or novel: exact error lines, PIDs, stack traces so on-call can fix offline. If resolved: "No further action required.")"""
+Use exactly these sections, in this order:
+## Summary
+(2-3 sentences: what failed, what was found, final state.)
+## Root Cause
+(The diagnosis and confidence level, each claim tied to a specific finding.)
+## Supporting Evidence
+(Bulleted list of the concrete observations from the investigation.)
+## Proposed Remediation
+(Each proposed action with target, value and the reasoning given.)
+## Operator Review
+(Approved without modification / aborted / feedback given, quoting the feedback.)
+## Execution Result
+(Each action and its result. If nothing ran, write "No actions were executed.")
+## Follow-up Actions
+(If unresolved or aborted: the specific steps on-call should take, with exact error lines, PIDs or commands. If resolved: preventive items such as alert tuning or a code fix for the underlying defect.)"""
 
     report_response = llm.invoke([
-        SystemMessage(content="You are an expert SRE writer producing concise, strictly formatted incident handoffs."),
+        SystemMessage(content="You are a senior SRE writing precise, neutral incident reports. You never invent facts."),
         HumanMessage(content=prompt),
     ])
-    post_mortem_markdown = report_response.content
+    post_mortem_markdown = header + "\n" + report_response.content
 
     # A GitHub failure must not crash the graph after the fix already ran
     try:
@@ -519,7 +573,7 @@ Use exactly these sections:
             target_resource=target,
         )
     except Exception as e:
-        print(f"   └─ ⚠️ [REPORTER] Failed to commit post-mortem: {e}")
+        print(f"   └─ [REPORTER] Failed to commit post-mortem: {e}")
         commit_url = ""
 
     return {
