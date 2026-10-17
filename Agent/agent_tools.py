@@ -371,6 +371,8 @@ def get_memory_trend(pod_name: str, namespace: str = "default", window_minutes: 
     buffers_query = f'app_unbounded_buffers_total{{{sel}}}'
     cache_query = f'app_bounded_cache_entries{{{sel}}}'
     
+    limit_query = f'kube_pod_container_resource_limits{{{sel},container="backend",resource="memory"}}'
+    limit = _query_prometheus_range(limit_query, window_minutes, in_mib=True)
     
     load = _query_prometheus_range(load_query, window_minutes)
     mem = _query_prometheus_range(mem_query, window_minutes, in_mib=True)
@@ -378,6 +380,8 @@ def get_memory_trend(pod_name: str, namespace: str = "default", window_minutes: 
     cache = _query_prometheus_range(cache_query, window_minutes)
 
     return (
+        f"Memory limit:\n{limit}\n\n"
+
         f"Request rate (req/s):\n{load}\n\n"
         f"Memory:\n{mem}\n\n"
         f"Unbounded buffers (leak indicator):\n{buffers}\n\n"
