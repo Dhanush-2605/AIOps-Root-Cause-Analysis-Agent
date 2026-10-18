@@ -28,7 +28,7 @@ spec:
       labels:
           severity: warning
       annotations:
-          summary: "Pod {{ $labels.pod }} memory usage above 85% of its limit"
+          summary: "Pod {{ $labels.pod }} memory usage above 70% of its limit"
           description: "Investigate whether this is genuine load-driven demand or a leak before scaling limits."
 
     - alert: PodCrashLooping

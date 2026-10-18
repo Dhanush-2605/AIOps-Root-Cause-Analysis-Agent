@@ -7,6 +7,7 @@ import json
 from datetime import datetime, timezone
 
 import uuid
+from collections import OrderedDict
 
 from typing import TypedDict, List, Annotated, Sequence, Literal, Optional
 
@@ -52,41 +53,123 @@ def run_agent_workflow(initial_state: dict, config: dict):
 
 
 # THE INGESTION ENDPOINT (From Alertmanager)
-    
+
 triggered_threads = []
+
+# Raw alert feed for the dashboard's Alerts tab. Kept separate from the agent threads so an
+# alert shows up the moment it fires (and flips to "resolved" later), even if no investigation
+# exists for it. Keyed by Alertmanager fingerprint so repeat notifications update one row
+# instead of piling up duplicates. In-memory only (lost on restart, like triggered_threads).
+MAX_ALERT_FEED = 200
+alert_feed: "OrderedDict[str, dict]" = OrderedDict()
+
+
+def _record_alert(alert: dict, thread_id: Optional[str] = None) -> None:
+    """Upsert one Alertmanager alert into the feed served by GET /alerts."""
+    labels = alert.get("labels", {}) or {}
+    annotations = alert.get("annotations", {}) or {}
+    alertname = labels.get("alertname", "Unknown Alert")
+    resource = (
+        labels.get("pod")
+        or labels.get("deployment")
+        or labels.get("service")
+        or labels.get("instance")
+        or ""
+    )
+    status = alert.get("status", "firing")
+    key = alert.get("fingerprint") or f"{alertname}|{resource}|{alert.get('startsAt', '')}"
+
+    entry = alert_feed.get(key)
+    if entry is None:
+        entry = {"fingerprint": key, "thread_id": None}
+        alert_feed[key] = entry
+    elif status == "firing" and entry.get("status") == "resolved":
+        # Same alert firing again after it resolved = a new incident, so drop the old link.
+        entry["thread_id"] = None
+
+    entry.update({
+        "alertname": alertname,
+        "status": status,
+        "pod": resource,
+        "namespace": labels.get("namespace", ""),
+        "severity": labels.get("severity", ""),
+        "summary": annotations.get("summary", ""),
+        "startsAt": alert.get("startsAt", ""),
+        "endsAt": alert.get("endsAt", ""),
+    })
+    # Keep the first investigation that picked this alert up; repeat notifications don't replace it.
+    if thread_id and not entry.get("thread_id"):
+        entry["thread_id"] = thread_id
+
+    while len(alert_feed) > MAX_ALERT_FEED:
+        alert_feed.popitem(last=False)  # drop the oldest
+
 
 @app.post("/alert")
 async def receive_alert(request: Request, background_tasks: BackgroundTasks):
     payload = await request.json()
     alerts = payload.get("alerts", [])
-    
-    
+
     for alert in alerts:
+        thread_id = None
+
         # Only process active outages, ignore "resolved" messages for the analyzer
         if alert.get("status") == "firing":
-            
+
             # 1. Generate a unique memory thread for this specific incident
             thread_id = str(uuid.uuid4())
             config = {"configurable": {"thread_id": thread_id}}
-            
+
             # 2. Format the starting State for LangGraph
             initial_state = {
                 "alert_payload": alert,
                 "execution_logs": "",
                 "verification_attempts": 0,
-        "incident_start_time": datetime.now(timezone.utc).isoformat()
+                "incident_start_time": datetime.now(timezone.utc).isoformat(),
             }
-            
+
             # 3. Push to background so Alertmanager gets a 200 OK immediately
             background_tasks.add_task(run_agent_workflow, initial_state, config)
-            
+
             triggered_threads.append(thread_id)
-            
+
+        # Record every alert (firing AND resolved) for the Alerts tab
+        _record_alert(alert, thread_id)
+
     return {
-        "status": "success", 
-        "message": "Alerts ingested by AI SRE", 
+        "status": "success",
+        "message": "Alerts ingested by AI SRE",
         "active_threads": triggered_threads
     }
+
+
+@app.get("/alerts")
+async def get_alerts():
+    """React polls this for the Alerts tab: raw Alertmanager feed, newest first."""
+    alerts = sorted(alert_feed.values(), key=lambda a: a.get("startsAt") or "", reverse=True)
+    return {"alerts": alerts}
+
+
+def _derive_status(snapshot, state_vals: dict) -> str:
+    """Map LangGraph state onto the statuses the dashboard understands.
+
+    paused    -> waiting at the HITL interrupt
+    executing -> graph still running
+    resolved  -> operator approved and every action succeeded
+    failed    -> operator approved but an action errored
+    aborted   -> operator aborted, or the agent found no safe action
+    """
+    if snapshot.tasks and any(t.interrupts for t in snapshot.tasks):
+        return "paused"
+    if snapshot.next:
+        return "executing"
+
+    route = state_vals.get("hitl_route")
+    logs = state_vals.get("execution_logs", "") or ""
+    if route == "execute":
+        return "failed" if "[ERROR]" in logs else "resolved"
+    return "aborted"  # "abort", or anything unexpected: treat as not remediated
+
 
 # In backend/main.py
 
@@ -108,11 +191,7 @@ async def get_incidents():
             alert_name = alert.get("labels", {}).get("alertname", "Unknown Alert")
             target = alert.get("labels", {}).get("deployment", alert.get("labels", {}).get("pod", "Unknown Resource"))
             
-            status = "executing"
-            if state_snapshot.tasks and state_snapshot.tasks[0].interrupts:
-                status = "paused"
-            elif not state_snapshot.next:
-                status = "completed"
+            status = _derive_status(state_snapshot, state_vals)
 
             # 1. Extract the Context (What the agent found in Prometheus/Logs)
             context_gathered = state_vals.get("context_gathered", "No context gathered.")
@@ -136,14 +215,27 @@ async def get_incidents():
             if state_vals.get("execution_logs"):
                 logs.append({"timestamp": "Sys", "node_name": "Executor", "message": state_vals.get("execution_logs")})
 
+            # The reporter stores either a commit URL or an error string here; only expose real links.
+            commit_url = state_vals.get("github_commit_url", "") or ""
+            if not commit_url.startswith("http"):
+                commit_url = ""
+            if commit_url:
+                logs.append({"timestamp": "Sys", "node_name": "Reporter", "message": f"Post-mortem committed: {commit_url}"})
+
             frontend_incidents.append({
                 "thread_id": tid,
                 "alert_name": alert_name,
                 "target_resource": target,
                 "status": status,
-                "context_gathered": context_gathered,  
-                "detailed_plan": detailed_plan,        
-                "logs": logs
+                "context_gathered": context_gathered,
+                "detailed_plan": detailed_plan,
+                "logs": logs,
+                "post_mortem_md": state_vals.get("post_mortem_md", ""),
+                "github_commit_url": commit_url,
+                "github_pr_url": state_vals.get("github_pr_url", ""),
+                # There is no metric-recovery verification step yet, so this means
+                # "approved and every action ran without error".
+                "verification_passed": status == "resolved",
             })
         except Exception as e:
             print(f"Error fetching state for {tid}: {e}")

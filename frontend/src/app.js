@@ -194,7 +194,7 @@ export default function AIOpsDashboard() {
     // investigation being spun up for it.
     const fetchAlerts = async () => {
       try {
-        const response = await fetch(`${AGENT_BASE_URL}/alert`);
+        const response = await fetch(`${AGENT_BASE_URL}/alerts`);
         if (!response.ok)
           throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
@@ -236,6 +236,14 @@ export default function AIOpsDashboard() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // The right pane holds a copy of the incident taken when it was clicked. Refresh it from
+  // every poll so it picks up new status, post-mortem and logs.
+  useEffect(() => {
+    setSelectedThread((prev) =>
+      prev ? incidents.find((i) => i.thread_id === prev.thread_id) || prev : prev,
+    );
+  }, [incidents]);
+
   const activeInvestigations = useMemo(
     () => incidents.filter((i) => !RESOLVED_STATUSES.has(i.status)),
     [incidents],
@@ -250,6 +258,7 @@ export default function AIOpsDashboard() {
   );
 
   const threadForAlert = (alert) =>
+    incidents.find((i) => alert.thread_id && i.thread_id === alert.thread_id) ||
     incidents.find(
       (i) =>
         i.alert_name === alert.alertname && i.target_resource === alert.pod,
@@ -582,15 +591,15 @@ export default function AIOpsDashboard() {
                           <FileText className="h-3 w-3" /> Post-mortem
                         </span>
                       )}
-                      {incident.github_pr_url && (
+                      {(incident.github_commit_url || incident.github_pr_url) && (
                         <a
-                          href={incident.github_pr_url}
+                          href={incident.github_commit_url || incident.github_pr_url}
                           target="_blank"
                           rel="noreferrer"
                           onClick={(e) => e.stopPropagation()}
                           className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1"
                         >
-                          <GitPullRequest className="h-3 w-3" /> PR
+                          <GitPullRequest className="h-3 w-3" /> Commit
                         </a>
                       )}
                     </div>
