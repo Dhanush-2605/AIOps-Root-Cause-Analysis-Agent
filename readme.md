@@ -53,7 +53,9 @@ To validate the Root Cause Analysis (RCA) agent, failures were **intentionally i
 
 **How the agent handles it:** this raises the **same `PodMemoryNearLimit` alert** as scenario 1, so the agent has to tell the two apart. `get_memory_trend` shows the unbounded-buffer gauge climbing continuously and memory never falling. It identifies a leak, and since raising the limit would only delay the next failure, it proposes **`restart_deployment`**.
 
-<!-- 📸 SCREENSHOTS: (a) k6 run / memory graph, (b) alert in the dashboard, (c) investigation findings showing the leak evidence, (d) HITL plan awaiting approval, (e) post-execution result -->
+![alt text](./images/buffer.png)
+
+![alt text](./images/buffer_3.png)
 
 <br/><br/><br/><br/><br/><br/>
 
@@ -68,7 +70,9 @@ To validate the Root Cause Analysis (RCA) agent, failures were **intentionally i
 
 **How the agent handles it:** `PostgresLockWaitersDetected` fires. The investigator runs `get_blocking_transactions` and `get_idle_in_transaction` and finds the blocking PID, the blocked query, and how long the lock has been held. Because the cause is a hoarding transaction (not a lack of resources), the agent avoids scaling or raising limits and proposes **`kill_blocking_transaction`** for that specific PID.
 
-<!-- 📸 SCREENSHOTS: (a) the two psql sessions, (b) alert in the dashboard, (c) investigation findings with the blocking PID, (d) HITL plan awaiting approval, (e) post-execution result -->
+![alt text](./images/blocking_transcation.png)
+
+![alt text](./images/image.png)
 
 <br/><br/><br/><br/><br/><br/>
 
@@ -80,7 +84,11 @@ To validate the Root Cause Analysis (RCA) agent, failures were **intentionally i
 
 **How the agent handles it:** the backend tracks in-flight requests and exposes a gauge of those older than 10 seconds, which triggers `HangingRequestsDetected`. The investigator calls `fetch_hanging_requests` and `fetch_filtered_pod_logs`, and finds the stuck endpoint along with the "request exceeded hang threshold" log lines. After approval, the executor runs **`abort_hanging_requests`**, which calls the backend's admin endpoint inside the pod. The stuck requests are cancelled and the clients receive a `504`.
 
-<!-- 📸 SCREENSHOTS: (a) k6 run with 504 results, (b) alert in the dashboard, (c) investigation findings with the hanging endpoint, (d) HITL plan awaiting approval, (e) post-execution result -->
+![alt text](./images/abort_hanging_request_final.png)
+
+![alt text](./images/hanging_req.png)
+
+![alt text](./images/hanging_request_console.png)
 
 <br/><br/><br/><br/><br/><br/>
 
@@ -92,7 +100,7 @@ To validate the Root Cause Analysis (RCA) agent, failures were **intentionally i
 
 **How the agent handles it:** the feedback is sent back to the proposer as the **main directive**. The agent builds a new plan using the operator's value, the critic reviews it (as advice only), and the flow pauses again for approval. Nothing runs until the human approves the revised plan.
 
-<!-- 📸 SCREENSHOTS: (a) original plan, (b) feedback entered by the operator, (c) revised plan awaiting approval, (d) final execution result -->
+![alt text](./images/memory_load_feedback.png)
 
 <br/><br/><br/><br/><br/><br/>
 
@@ -106,7 +114,11 @@ To validate the Root Cause Analysis (RCA) agent, failures were **intentionally i
 
 This is the safety behaviour the agent is designed around: **no evidence, no claim, no action**.
 
-<!-- 📸 SCREENSHOTS: (a) the alert in the dashboard, (b) investigation findings showing the failed DB tool calls / evidence gap, (c) the inconclusive result with no proposed plan, (d) the generated post-mortem -->
+
+![alt text](./images/no_action_case.png)
+
+
+![alt text](./images/mem-hog.png)
 
 <br/><br/><br/><br/><br/><br/>
 
@@ -120,6 +132,6 @@ This is the safety behaviour the agent is designed around: **no evidence, no cla
 
 **Planned improvement:** add a CPU trend tool (usage vs. limit, throttling ratio) so CPU incidents can be investigated like the memory cases.
 
-<!-- 📸 SCREENSHOTS: (a) the CPU alert, (b) the agent's empty / inconclusive result -->
+![alt text](./images/cpu_throttle.png)
 
 <br/><br/><br/><br/><br/><br/>

@@ -194,7 +194,7 @@ export default function AIOpsDashboard() {
     // investigation being spun up for it.
     const fetchAlerts = async () => {
       try {
-        const response = await fetch(`${AGENT_BASE_URL}/alerts`);
+        const response = await fetch(`${AGENT_BASE_URL}/alert`);
         if (!response.ok)
           throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
