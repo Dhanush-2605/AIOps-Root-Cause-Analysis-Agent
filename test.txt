@@ -47,48 +47,5 @@ First start a throwaway curl pod (replace `backend-service` with your actual ser
 kubectl run tester --rm -it --restart=Never --image=curlimages/curl --command -- sh
 ```
 
-Then, inside it:
-```bash
-B=http://backend-service:3000
 
-# HangingRequestsDetected: fires about 45-55s later
-curl -s -X POST $B/api/payments/process &
-
-# PostgresIdleInTransaction: leaves a connection open holding a row lock
-curl -s -X POST $B/api/orders/lock-row -H 'Content-Type: application/json' -d '{"orderId":1}'
-
-# PostgresLockWaitersDetected: run after lock-row, these block on the same row
-for i in 1 2 3; do curl -s -X POST $B/api/orders/checkout-slow -H 'Content-Type: application/json' -d '{"orderId":1}' & done
-```
-
-**Postgres connections maxed:** `lock-row` with different order IDs only holds up to 20 connections (your pool `max`). Your alert needs fewer than 10 free out of `max_connections`, so either lower `max_connections` temporarily or run several backend replicas.
-
-## Persistent volume almost full
-
-This adds a big filler file to your Postgres volume. Replace the pod name and path with yours, and size the file to push usage past 90%:
-```bash
-kubectl exec <postgres-pod> -- fallocate -l 900M /var/lib/postgresql/data/filler.bin
-# cleanup
-kubectl exec <postgres-pod> -- rm /var/lib/postgresql/data/filler.bin
-```
-
-## Alerts that won't fire as written
-
-- **`HighHttpErrorRate`:** your Node code never exposes `http_requests_total`. It only exposes the `http_request_duration_seconds` histogram, so this alert can never trigger. Change the expression to use `http_request_duration_seconds_count`:
-  ```
-  sum(rate(http_request_duration_seconds_count{status_code=~"5.."}[5m])) / sum(rate(http_request_duration_seconds_count[5m])) > 0.05
-  ```
-  To generate 5xx responses, start the hanging payment requests and then abort them, which returns 504s:
-  ```bash
-  kubectl exec <backend-pod> -- curl -s -X POST "localhost:3000/admin/requests/abort?threshold=5"
-  ```
-- **`NetworkPacketDrops`:** this is hard to fake reliably with plain commands. Chaos Mesh (`NetworkChaos`) is the better tool for it.
-
-
-
-curl -s -X POST http://20.244.79.163:3000/api/orders/lock-row -H 'Content-Type: application/json' -d '{"orderId":1}'
-
-
-
-for i in 1 2 3; do curl -s -X POST http://20.244.79.163:3000/api/orders/checkout-slow -H 'Content-Type: application/json' -d '{"orderId":1}' & done
 

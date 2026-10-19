@@ -1,3 +1,21 @@
+## Architecture Overview
+
+
+![alt text](architecture_overview.svg)
+
+
+
+
+## Agentic workflow
+
+
+![alt text](agent_workflow.svg)
+
+
+
+
+
+
 ## Chaos Engineering: Tested Failure Scenarios
 
 To validate the Root Cause Analysis (RCA) agent, failures were **intentionally injected** into the system (chaos engineering) and the agent was observed end to end. Each scenario follows the same loop:
@@ -135,3 +153,7 @@ This is the safety behaviour the agent is designed around: **no evidence, no cla
 ![alt text](./images/cpu_throttle.png)
 
 <br/><br/><br/><br/><br/><br/>
+
+
+
+

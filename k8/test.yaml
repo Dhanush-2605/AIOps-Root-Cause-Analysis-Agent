@@ -1,65 +1,49 @@
-# ---
-# apiVersion: v1
-# kind: Secret
-# metadata:
-#   name: postgres-secret
-#   labels:
-#     app: postgres
-# type: Opaque
-# stringData:
-#   postgres-password: "supersecretpassword" # Update this before applying
-# ---
-# apiVersion: apps/v1
-# kind: Deployment
-# metadata:
-#   name: postgres
-#   labels:
-#     app: postgres
-# spec:
-#   replicas: 1
-#   selector:
-#     matchLabels:
-#       app: postgres
-#   template:
-#     metadata:
-#       labels:
-#         app: postgres
-#     spec:
-#       containers:
-#         - name: postgres
-#           image: postgres:15
-#           ports:
-#             - containerPort: 5432
-#           env:
-#             - name: POSTGRES_PASSWORD
-#               valueFrom:
-#                 secretKeyRef:
-#                   name: postgres-secret
-#                   key: postgres-password
-#           resources:
-#             requests:
-#               memory: "256Mi"
-#               cpu: "250m"
-#             limits:
-#               memory: "512Mi"
-#               cpu: "500m"
-#           volumeMounts:
-#             - mountPath: /var/lib/postgresql/data
-#               name: pgdata
-#       volumes:
-#         - name: pgdata
-#           emptyDir: {}
-# ---
-# apiVersion: v1
-# kind: Service
-# metadata:
-#   name: postgres
-#   labels:
-#     app: postgres
-# spec:
-#   type: ClusterIP
-#   ports:
-#     - port: 5432
-#       targetPort: 5432
-#   selector:
-#     app: postgres
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nodejs-block-test
+  labels:
+    app: rca-test
+spec:
+  containers:
+  - name: node
+    image: node:18-alpine
+    command: ["node", "-e", `
+      const http = require('http');
+      let isBlocked = false;
+
+      const server = http.createServer((req, res) => {
+        if (req.url === '/block') {
+          isBlocked = true;
+          res.end('Event loop blocked for 40 seconds!\n');
+          // Heavy CPU-bound synchronous loop locking the thread
+          const start = Date.now();
+          while (Date.now() - start < 40000) {
+            // synchronous blocking
+          }
+          isBlocked = false;
+          return;
+        }
+
+        if (isBlocked) {
+          // Will not even reach here because the event loop is frozen, 
+          // causing the HTTP request to hang and timeout.
+          res.writeHead(503);
+          res.end('Busy\n');
+        } else {
+          res.writeHead(200);
+          res.end('OK\n');
+        }
+      });
+
+      server.listen(3000);
+    `]
+    readinessProbe:
+      httpGet:
+        path: /
+        port: 3000
+      periodSeconds: 5
+      timeoutSeconds: 2
+      failureThreshold: 1
+    ports:
+    - containerPort: 3000
