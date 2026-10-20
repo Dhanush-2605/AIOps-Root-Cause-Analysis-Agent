@@ -2,7 +2,7 @@
 # BACKEND POD → KEY VAULT WORKLOAD IDENTITY
 # ==========================================================================
 
-# The Azure-side execution identity (equivalent to google_service_account)
+# The Azure-side execution identity
 resource "azurerm_user_assigned_identity" "backend_identity" {
   name                = "backend-db-accessor"
   resource_group_name = azurerm_resource_group.main.name
@@ -17,7 +17,6 @@ resource "azurerm_role_assignment" "backend_secret_access" {
 }
 
 # The cryptographic binding linking the Kubernetes ServiceAccount to the Azure identity
-# (equivalent to google_service_account_iam_member workload identity binding)
 resource "azurerm_federated_identity_credential" "pod_workload_identity_binding" {
   name                      = "backend-pod-federation"
   user_assigned_identity_id = azurerm_user_assigned_identity.backend_identity.id
@@ -31,7 +30,6 @@ resource "azurerm_federated_identity_credential" "pod_workload_identity_binding"
 # ==========================================================================
 
 # 1. The Azure identity that the GitHub Pipeline will assume
-#    (equivalent to google_service_account.github_actions_sa)
 resource "azurerm_user_assigned_identity" "github_actions_identity" {
   name                = "github-actions-pipeline"
   resource_group_name = azurerm_resource_group.main.name
@@ -39,7 +37,6 @@ resource "azurerm_user_assigned_identity" "github_actions_identity" {
 }
 
 # 2. Grant the Pipeline identity control over AKS, Key Vault, networking, and ACR
-#    (role scope is the resource group — the closest equivalent to project-level IAM in GCP)
 resource "azurerm_role_assignment" "pipeline_roles" {
   for_each = toset([
     "Azure Kubernetes Service Cluster Admin Role", # full management of AKS clusters
@@ -54,7 +51,6 @@ resource "azurerm_role_assignment" "pipeline_roles" {
 }
 
 # 3. Federated credential connecting GitHub's OIDC token to the Azure identity
-#    (equivalent to the Workload Identity Pool + Provider + binding trio in GCP)
 resource "azurerm_federated_identity_credential" "github_sa_binding" {
   name                      = "github-actions-federation"
   user_assigned_identity_id = azurerm_user_assigned_identity.github_actions_identity.id

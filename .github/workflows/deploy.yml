@@ -3,14 +3,18 @@ name: Build and Deploy 3-Tier App
 on:
   workflow_dispatch:
 
+# These values are written to the repo's Actions variables by Terraform (terraform/github.tf)
 env:
-  RESOURCE_GROUP: rg-production
-  ACR_NAME: acrnodejsapprepo
-  ACR_LOGIN_SERVER: acrnodejsapprepo.azurecr.io
-  CLUSTER_NAME: aks-production-cluster
-  AZURE_CLIENT_ID: 56e10af1-702c-45b1-b5e3-108416c612da
-  AZURE_TENANT_ID: 460e9a4b-7c0a-4b4f-8241-502b2cb1f3c4
-  AZURE_SUBSCRIPTION_ID: b0c6c5be-d932-4a5f-b398-0b1261b5820a
+  RESOURCE_GROUP: ${{ vars.RESOURCE_GROUP }}
+  CLUSTER_NAME: ${{ vars.CLUSTER_NAME }}
+  ACR_NAME: ${{ vars.ACR_NAME }}
+  ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
+  KEYVAULT_NAME: ${{ vars.KEYVAULT_NAME }}
+  AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  BACKEND_CLIENT_ID: ${{ vars.BACKEND_CLIENT_ID }}
+  CSI_IDENTITY_CLIENT_ID: ${{ vars.CSI_IDENTITY_CLIENT_ID }}
 
 jobs:
   build-and-deploy:
@@ -55,13 +59,27 @@ jobs:
           echo "FRONTEND_TAG=$FRONTEND_TAG" >> $GITHUB_ENV
 
       - name: Connect to AKS Cluster
-        run: az aks get-credentials --resource-group rg-production --name aks-production-cluster --overwrite-existing --admin
+        run: az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.CLUSTER_NAME }} --overwrite-existing --admin
+
+      - name: Create monitoring namespace and Postgres exporter secret
+        run: |
+          DB_PASSWORD=$(az keyvault secret show --vault-name "${{ env.KEYVAULT_NAME }}" --name app-env --query value -o tsv \
+            | grep '^DB_PASSWORD=' | head -1 | cut -d= -f2- | tr -d '\r\n"')
+          [ -n "$DB_PASSWORD" ] || { echo "DB_PASSWORD not found in Key Vault secret app-env"; exit 1; }
+          echo "::add-mask::$DB_PASSWORD"
+          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret generic pg-exporter-secret -n monitoring \
+            --from-literal=password="$DB_PASSWORD" --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy to AKS
         run: |
           sed -i "s|BACKEND_IMAGE_PLACEHOLDER|${{ env.BACKEND_TAG }}|g" k8/k8s.yaml
           sed -i "s|FRONTEND_IMAGE_PLACEHOLDER|${{ env.FRONTEND_TAG }}|g" k8/k8s.yaml
           sed -i "s|PYTHON_IMAGE_PLACEHOLDER|${{ env.PYTHON_TAG }}|g" k8/k8s.yaml
+          sed -i "s|BACKEND_CLIENT_ID_PLACEHOLDER|${{ env.BACKEND_CLIENT_ID }}|g" k8/k8s.yaml
+          sed -i "s|CSI_IDENTITY_CLIENT_ID_PLACEHOLDER|${{ env.CSI_IDENTITY_CLIENT_ID }}|g" k8/k8s.yaml
+          sed -i "s|TENANT_ID_PLACEHOLDER|${{ env.AZURE_TENANT_ID }}|g" k8/k8s.yaml
+          sed -i "s|KEYVAULT_NAME_PLACEHOLDER|${{ env.KEYVAULT_NAME }}|g" k8/k8s.yaml
 
       - name: Deploy Prometheus Stack via Helm
         run: |

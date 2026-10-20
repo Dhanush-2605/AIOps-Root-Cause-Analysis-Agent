@@ -45,7 +45,7 @@ data:
     namespace: default
     annotations:
       # The Workload Identity Bridge to Azure Managed Identity
-      azure.workload.identity/client-id: "6695b889-efa8-498a-9d91-04c84a03235e"
+      azure.workload.identity/client-id: "BACKEND_CLIENT_ID_PLACEHOLDER"
 ---
   apiVersion: secrets-store.csi.x-k8s.io/v1
   kind: SecretProviderClass
@@ -57,10 +57,10 @@ data:
     parameters:
       usePodIdentity: "false"
       useVMManagedIdentity: "true"
-      userAssignedIdentityID: "5cd6ea91-933c-43fe-ade6-0d348d861506"
-      clientID: "6695b889-efa8-498a-9d91-04c84a03235e"
-      keyvaultName: "kv-doom-secrets1"
-      tenantId: "460e9a4b-7c0a-4b4f-8241-502b2cb1f3c4"
+      userAssignedIdentityID: "CSI_IDENTITY_CLIENT_ID_PLACEHOLDER"
+      clientID: "BACKEND_CLIENT_ID_PLACEHOLDER"
+      keyvaultName: "KEYVAULT_NAME_PLACEHOLDER"
+      tenantId: "TENANT_ID_PLACEHOLDER"
       objects: |
         array:
           - |
@@ -81,9 +81,9 @@ spec:
   parameters:
     usePodIdentity: "false"
     useVMManagedIdentity: "false"
-    clientID: "6695b889-efa8-498a-9d91-04c84a03235e"
-    keyvaultName: "kv-doom-secrets1"
-    tenantId: "460e9a4b-7c0a-4b4f-8241-502b2cb1f3c4"
+    clientID: "BACKEND_CLIENT_ID_PLACEHOLDER"
+    keyvaultName: "KEYVAULT_NAME_PLACEHOLDER"
+    tenantId: "TENANT_ID_PLACEHOLDER"
     objects: |
       array:
         - |
@@ -346,7 +346,7 @@ spec:
       - name: backend
         image: BACKEND_IMAGE_PLACEHOLDER 
         ports:
-        - containerPort: 8080
+        - containerPort: 3000
         envFrom:
         - configMapRef:
             name: app-config         # <--- Pulls the host routing data
@@ -537,8 +537,3 @@ spec:
     - protocol: TCP
       port: 5000             # The port Alertmanager is sending traffic to
       targetPort: 8000       # Forwards traffic to your FastAPI container port
-
-
-    
- 
-     

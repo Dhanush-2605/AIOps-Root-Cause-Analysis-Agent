@@ -1,8 +1,6 @@
 # ==========================================================================
 # 1. RESOURCE GROUP
 # ==========================================================================
-# GCP has no direct equivalent to this — a resource group is Azure's
-# container for everything below. Your GCP project_id maps loosely to this.
 
 resource "azurerm_resource_group" "main" {
   name     = var.resource_group_name
@@ -10,15 +8,9 @@ resource "azurerm_resource_group" "main" {
 }
 
 # ==========================================================================
-# 2. AKS CLUSTER footprint (equivalent to your GKE Autopilot cluster)
+# 2. AKS CLUSTER footprint 
 # ==========================================================================
-# NOTE: Azure has no exact 1:1 match for GKE Autopilot's fully-managed,
-# pay-per-pod model. "AKS Automatic" is the closest match if your azurerm
-# provider version supports it. Below is a standard AKS cluster with
-# node-pool autoscaling, which is the safe, broadly-supported equivalent —
-# swap in aks_automatic settings later if you want to get closer to Autopilot.
 
-# ==========================================================================
 
 resource "azurerm_kubernetes_cluster" "primary" {
   name                = "aks-production-cluster"
@@ -49,13 +41,13 @@ key_vault_secrets_provider {
 }
 
 # ==========================================================================
-# 3. SECRET CONFIGURATION LAYER (Azure Key Vault = GCP Secret Manager)
+# 3. SECRET CONFIGURATION LAYER (Azure Key Vault)
 # ==========================================================================
 
 data "azurerm_client_config" "current" {}
 
 resource "azurerm_key_vault" "main" {
-  name                       = "kv-doom-secrets1" # must be globally unique, <=24 chars
+  name                       = "kv-doom-secrets2" # must be globally unique, <=24 chars
   location                   = azurerm_resource_group.main.location
   resource_group_name        = azurerm_resource_group.main.name
   tenant_id                  = var.tenant_id
@@ -68,10 +60,12 @@ resource "azurerm_key_vault_secret" "db_password" {
   name         = "db-password"
   value        = var.db_root_password
   key_vault_id = azurerm_key_vault.main.id
+
+  depends_on = [time_sleep.kv_rbac_propagation]
 }
 
 # ==========================================================================
-# 4. CONTAINER REGISTRY (Azure Container Registry = GCP Artifact Registry)
+# 4. CONTAINER REGISTRY (Azure Container Registry)
 # ==========================================================================
 
 resource "azurerm_container_registry" "app_repo" {
