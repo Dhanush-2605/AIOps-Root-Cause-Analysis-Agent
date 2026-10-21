@@ -66,9 +66,11 @@ kubectl get pods -n monitoring       # all Running
 kubectl get svc frontend-service     # EXTERNAL-IP = dashboard URL
 ```
 
-![alt text](./images/Screenshot 2026-10-20 223100.png)
 
-![alt text](./images/Screenshot 2026-10-20 223129.png)
+![alt text](./images/Screenshot%202026-10-20%20223100.png)
+
+![alt text](./images/Screenshot%202026-10-20%20223129.png)
+
 
 ![alt text](./images/image1.png)
 

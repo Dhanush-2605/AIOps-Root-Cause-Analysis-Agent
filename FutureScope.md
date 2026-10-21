@@ -69,11 +69,15 @@ State is stored in the RAM of one machine. If a thread is waiting for human appr
 - Partitioning by `thread_id` can come later. Start with table partitioning in one database and shard only if load requires it.
 
 
+## 8. Slack or Teams approvals 
+
+- with a timeout and escalation. Never auto-execute on timeout.
 
 
-- **Slack or Teams approvals** with a timeout and escalation. Never auto-execute on timeout.
 
-- **Tracing and metrics** for the agent: tokens per incident, queue depth, approval rate, fix success rate.
+## 9. Tracing and metrics
+
+- for the agent: tokens per incident, queue depth, approval rate, fix success rate.
 
 
 

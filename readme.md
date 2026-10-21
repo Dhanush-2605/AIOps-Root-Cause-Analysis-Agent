@@ -255,12 +255,14 @@ The test pod is standalone, so Kubernetes does not recreate it after deletion. I
 
 ![alt text](./images/pod_unresponsive_delete.png)
 
-![alt text](./images/unresponsive_console_delete.png)
+![alt text](./images/unresponsive_console.png)
 
 ![alt text](./images/unresponsive_nosolution_1.png)
 
 
 ![alt text](./images/unresponsive_nosolution_2.png)
+
+
 
 
 #### Incident Reports
@@ -297,61 +299,4 @@ https://github.com/Dhanush-2605/GCP_TEST/blob/main/incidents/20261018-125214-pod
 
 
 
-
-
-
-
-
-What is simulated: a pod that is still Running but has stopped serving traffic. A standalone busybox pod (frozen-pod) is created in the default namespace with a readiness probe that checks for the file /tmp/ready. Once it is 1/1 Ready, deleting that file with kubectl exec makes the probe fail: the pod keeps running, but drops to 0/1 Ready.
-
-The test runs in default on purpose. The agent can read pods cluster-wide, but its remediation permissions (delete pod, patch, exec) are scoped to the default namespace.
-
-<details> <summary><b>Reproduce it (PowerShell)</b></summary>
-Create a pod that starts healthy (the readiness probe checks /tmp/ready):
-powershell
-
-'{"apiVersion":"v1","kind":"Pod","metadata":{"name":"frozen-pod"},"spec":{"containers":[{"name":"frozen-pod","image":"busybox:1.36","command":["sh","-c","touch /tmp/ready; sleep 86400"],"readinessProbe":{"exec":{"command":["cat","/tmp/ready"]},"periodSeconds":5,"failureThreshold":1}}]}}' | kubectl apply -n default -f -
-
-
-Wait until it is 1/1 Ready:
-
-powershell
-kubectl wait --for=condition=Ready pod/frozen-pod -n default --timeout=60s
-Break it (the pod stays Running but becomes 0/1):
-powershell
-kubectl exec -n default frozen-pod -- rm /tmp/ready
-kubectl get pod frozen-pod -n default
-Wait 3+ minutes. The alert goes Pending → Firing and is sent to the agent.
-
-Cleanup (only the test pod, never the namespace):
-
-powershell
-kubectl delete pod frozen-pod -n default --ignore-not-found
-</details>
-
-How the agent handles it: PodFrozenAndUnresponsive fires when a pod is in the Running phase but its container has not been ready for 3 minutes. The investigator uses list_pods, get_pod_status and fetch_filtered_pod_logs, and finds a running container reporting ready: false, with no restarts (so it is not crash-looping) and no error output in its logs: alive, but not serving. None of the lower-impact fixes applies (no blocking query, leak or hanging request, and a standalone pod has no deployment to restart), so the proposer falls back to the last-resort action, delete_pod, and the plan waits for operator approval.
-
-Notes:
-
-The agent reads pod phase, container readiness, restart count and logs. It does not read Kubernetes events, so the failing readiness probe is inferred from the not-ready state rather than quoted directly.
-The test pod is standalone, so nothing recreates it after deletion. With a Deployment-managed pod, the replacement would start automatically.
-
-
-
-![alt text](./images/pod_unresponsive.png)
-
-![alt text](unresponsive_console.png)
-
-![alt text](unresponsive_nosolution_1.png)
-
-![alt text](unresponsive_nosolution_2.png)
-
-
-
-<br/><br/><br/><br/><br/><br/>
-
-
-Incidents:
-
-https://github.com/Dhanush-2605/GCP_TEST/blob/main/incidents/20261017-163343-cputhrottlinghigh.md
 
