@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars (git-ignored) and fill in.
+subscription_id = ""
+tenant_id       = ""
+github_repo     = "<USER_NAME>/<REPO_NAME>"
+
+db_root_password      = ""
+pg_repl_password      = ""
+pgpool_admin_password = ""
+groq_api_key          = ""
+
+# Fine-grained token for this repo: Contents (read/write) + Variables (read/write)
+github_token = ""
+
