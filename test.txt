@@ -1,51 +1,8 @@
 kubectl port-forward -n monitoring pod/prometheus-prometheus-stack-kube-prom-prometheus-0 9090:9090
 
 
- kubectl exec -it postgres-0 -- psql -U postgres
+kubectl exec -it postgres-0 -- psql -U postgres
 
 
  BEGIN;
 SELECT * FROM pg_stat_activity LIMIT 1;
-
-
-
-All commands use the `default` namespace, since your `DeploymentMissingOrScaledToZero` rule only watches that one.
-
-## Resource and pod-state alerts
-
-**Memory near limit** (`PodMemoryNearLimit`, uses about 90% of a 200Mi limit):
-```bash
-kubectl run mem-hog --restart=Never --image=polinux/stress --overrides='{"spec":{"containers":[{"name":"mem-hog","image":"polinux/stress","command":["stress","--vm","1","--vm-bytes","180M","--vm-hang","0"],"resources":{"limits":{"memory":"200Mi","cpu":"200m"}}}]}}'
-```
-
-**CPU throttling and maxed CPU** (`CPUThrottlingHigh` and `ProcessStuckInExecutionLoop`):
-```bash
-kubectl run cpu-hog --restart=Never --image=polinux/stress --overrides='{"spec":{"containers":[{"name":"cpu-hog","image":"polinux/stress","command":["stress","--cpu","2"],"resources":{"limits":{"cpu":"100m","memory":"64Mi"}}}]}}'
-```
-
-**Crash loop** (`PodCrashLooping`):
-```bash
-kubectl run crasher --restart=Always --image=busybox -- sh -c "sleep 5; exit 1"
-```
-It needs about 4 restarts in 5 minutes, which the backoff gives you after roughly 3–4 minutes.
-
-**Running but not ready** (`PodFrozenAndUnresponsive`):
-```bash
-kubectl run frozen --restart=Never --image=nginx --overrides='{"spec":{"containers":[{"name":"frozen","image":"nginx","readinessProbe":{"exec":{"command":["false"]},"periodSeconds":5}}]}}'
-```
-
-**Deployment with 0 replicas** (`DeploymentMissingOrScaledToZero`):
-```bash
-kubectl create deployment zero-test --image=nginx
-kubectl scale deployment zero-test --replicas=0
-```
-
-## App and Postgres alerts
-
-First start a throwaway curl pod (replace `backend-service` with your actual service name):
-```bash
-kubectl run tester --rm -it --restart=Never --image=curlimages/curl --command -- sh
-```
-
-
-

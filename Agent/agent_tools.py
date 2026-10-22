@@ -50,12 +50,7 @@ def _k8s_error(e: ApiException, what: str) -> str:
     return f"Kubernetes API Error while {what}: {e.reason}"
 
 
-# ---------------------------------------------------------------------------
-# Postgres helpers: direct connection through pgpool (same as the Node backend)
-# ---------------------------------------------------------------------------
-# The Key Vault CSI mount holds a .env-style file (DB_PASSWORD=...). It is parsed with
-# python-dotenv into a dict; nothing is exported into os.environ.
-# The file is re-read on every connection, so secret rotation is picked up automatically.
+
 SECRET_PATH = os.environ.get("DB_SECRET_PATH", "/mnt/secrets/app-env")
 
 DB_HOST = os.environ.get("DB_HOST", "pgpool-service")

@@ -15,8 +15,7 @@ def commit_post_mortem_to_repo(
     
     """Commits the Post-Mortem Markdown file directly to the repository's default branch."""
     github_token = os.getenv("GITHUB_TOKEN")
-    repo_name = "Dhanush-2605/GCP_TEST"  
-    print(github_token, repo_name)
+    repo_name = "Dhanush-2605/AIOps-Root-Cause-Analysis-Agent"  
     
     if not github_token or not repo_name:
         return "GitHub integration skipped: GITHUB_TOKEN or GITHUB_REPO not configured in environment."

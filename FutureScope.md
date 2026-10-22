@@ -81,3 +81,13 @@ State is stored in the RAM of one machine. If a thread is waiting for human appr
 
 
 
+### Note:
+
+1. Give the critic real context. Now the critic only sees the alert, the investigation and the plan, plus a short list of safety rules. SOP_CONTEXT in Agent/orchestator.py is empty, so the critic knows nothing about how the cluster is set up and cannot tell what a change would affect (for example, deleting pgpool cuts the backend off from the database). Two ways to fix this:
+
+- SOPs and a dependency map. Write down how the system is wired: which service depends on which, what is protected, and what each action affects. Pass the relevant part to the critic for each alert, so it can answer "if the agent touches this, what else breaks?". This fits with the runbook store in idea 1.
+
+- A separate guardrail model. Add an independent model or policy check that validates every action against hard rules before it reaches the operator. The model that proposes a fix should not be the only one that judges it.
+
+2. The Postgres setup is more complex than the agent needs. The primary and replica (a StatefulSet behind pgpool) were built to explore distributed systems and see how a leader-follower flow works. You can ignore it. For a simpler setup, run a single Postgres as a Deployment with one volume, and point DB_HOST in the ConfigMap in k8/k8s.yaml (and the agent and backend defaults) to its service instead of pgpool-service. You can then drop the replica, pgpool, and the pg-repl-password and pgpool-admin-password secrets (with their Terraform variables).
+
